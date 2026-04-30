@@ -1,0 +1,18 @@
+[package]
+name = "fish-prompt"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.82"
+
+[[bin]]
+name = "fish-prompt-daemon"
+path = "src/main.rs"
+
+[dependencies]
+gix = { version = "0.83", default-features = false, features = ["status", "max-performance-safe", "sha1"] }
+libc = "0.2"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
