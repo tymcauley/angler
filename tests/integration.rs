@@ -142,14 +142,15 @@ struct Fields {
     behind: String,
     dirty: String,
     operation: String,
+    upstream: String,
 }
 
 fn read_status(p: &Path) -> std::io::Result<Fields> {
     let mut buf = Vec::new();
     File::open(p)?.read_to_end(&mut buf)?;
     let parts: Vec<&[u8]> = buf.split(|&b| b == 0).collect();
-    if parts.len() < 6 {
-        return Err(std::io::Error::other("fewer than 6 fields"));
+    if parts.len() < 7 {
+        return Err(std::io::Error::other("fewer than 7 fields"));
     }
     let s = |b: &[u8]| std::str::from_utf8(b).unwrap_or("").to_owned();
     Ok(Fields {
@@ -159,6 +160,7 @@ fn read_status(p: &Path) -> std::io::Result<Fields> {
         behind: s(parts[3]),
         dirty: s(parts[4]),
         operation: s(parts[5]),
+        upstream: s(parts[6]),
     })
 }
 
@@ -202,6 +204,40 @@ fn rev_parse(repo: &Path, rev: &str) -> String {
         .output()
         .unwrap();
     String::from_utf8(out.stdout).unwrap().trim().to_owned()
+}
+
+// Build a repo with branch.main.* upstream config but NO refs/remotes/origin/main —
+// the gone-upstream case. Mirrors what happens after a remote branch is deleted
+// (e.g. squash-merge cleanup) and the local tracking ref is pruned.
+fn make_repo_with_gone_upstream() -> TempDir {
+    let dir = tempfile::tempdir().unwrap();
+    git(dir.path(), &["init", "-q", "-b", "main"]);
+    std::fs::write(dir.path().join("a.txt"), b"hi\n").unwrap();
+    git(dir.path(), &["add", "a.txt"]);
+    git(dir.path(), &["commit", "-q", "-m", "init"]);
+    git(dir.path(), &["config", "branch.main.remote", "origin"]);
+    git(
+        dir.path(),
+        &["config", "branch.main.merge", "refs/heads/main"],
+    );
+    git(
+        dir.path(),
+        &[
+            "config",
+            "remote.origin.url",
+            "git@example.invalid:placeholder.git",
+        ],
+    );
+    git(
+        dir.path(),
+        &[
+            "config",
+            "remote.origin.fetch",
+            "+refs/heads/*:refs/remotes/origin/*",
+        ],
+    );
+    // Crucially: do NOT create refs/remotes/origin/main.
+    dir
 }
 
 // Build a repo where main has `ahead` commits past the synthetic upstream and
@@ -410,6 +446,37 @@ fn detached_head_reports_zero_ahead_behind() {
     let f = h.wait_for(repo.path());
     assert_eq!(f.ahead, "0");
     assert_eq!(f.behind, "0");
+}
+
+#[test]
+fn gone_upstream_is_reported() {
+    let h = Harness::new();
+    let repo = make_repo_with_gone_upstream();
+    h.request(repo.path());
+    let f = h.wait_for(repo.path());
+    assert_eq!(f.upstream, "gone");
+    assert_eq!(f.ahead, "0");
+    assert_eq!(f.behind, "0");
+}
+
+#[test]
+fn no_upstream_is_not_reported_as_gone() {
+    let h = Harness::new();
+    let repo = make_clean_repo(); // no branch.*.remote configured
+    h.request(repo.path());
+    let f = h.wait_for(repo.path());
+    assert_eq!(f.upstream, "");
+}
+
+#[test]
+fn tracking_upstream_is_not_reported_as_gone() {
+    let h = Harness::new();
+    let repo = make_repo_with_upstream(2, 1);
+    h.request(repo.path());
+    let f = h.wait_for(repo.path());
+    assert_eq!(f.upstream, "");
+    assert_eq!(f.ahead, "2");
+    assert_eq!(f.behind, "1");
 }
 
 #[test]

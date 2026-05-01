@@ -200,10 +200,19 @@ fn unwatch_repo(debouncer: &mut Debouncer<notify::RecommendedWatcher, FileIdMap>
 
 struct Status {
     branch: String,
-    ahead: u32,
-    behind: u32,
+    upstream: UpstreamState,
     dirty: DirtyState,
     operation: Option<&'static str>,
+}
+
+enum UpstreamState {
+    /// No upstream is configured for this branch (or HEAD is detached).
+    None,
+    /// Upstream is configured and reachable; we have ahead/behind counts.
+    Tracking { ahead: u32, behind: u32 },
+    /// Upstream is configured but the tracking ref isn't there — typically
+    /// because the remote branch was deleted (e.g. squash-merge cleanup).
+    Gone,
 }
 
 #[derive(Copy, Clone)]
@@ -233,15 +242,14 @@ fn compute_status_for_repo(repo: &gix::Repository, dirty_deadline: Duration) -> 
         },
     };
 
-    let (ahead, behind) = head_name
+    let upstream = head_name
         .as_ref()
-        .and_then(|n| compute_ahead_behind(repo, n.as_ref()))
-        .unwrap_or((0, 0));
+        .map(|n| compute_upstream(repo, n.as_ref()))
+        .unwrap_or(UpstreamState::None);
 
     Some(Status {
         branch,
-        ahead,
-        behind,
+        upstream,
         dirty: compute_dirty(repo, dirty_deadline),
         operation: detect_operation(repo.git_dir()),
     })
@@ -268,34 +276,45 @@ fn detect_operation(git_dir: &Path) -> Option<&'static str> {
     }
 }
 
-// Returns (ahead, behind) for `head_name` against its configured upstream
-// tracking branch. Returns None on any failure (no upstream, gone upstream,
-// missing refs, etc.) so the caller can fall through to (0, 0).
-fn compute_ahead_behind(
-    repo: &gix::Repository,
-    head_name: &gix::refs::FullNameRef,
-) -> Option<(u32, u32)> {
-    let tracking = repo
-        .branch_remote_tracking_ref_name(head_name, gix::remote::Direction::Fetch)?
-        .ok()?;
+// Resolves the upstream state for a branch:
+//   - None when no tracking config is set (or detached HEAD).
+//   - Gone when tracking is configured but the tracking ref doesn't exist —
+//     i.e., remote branch was deleted, typically via squash-merge cleanup.
+//   - Tracking with ahead/behind counts otherwise (symmetric difference walk).
+fn compute_upstream(repo: &gix::Repository, head_name: &gix::refs::FullNameRef) -> UpstreamState {
+    let tracking =
+        match repo.branch_remote_tracking_ref_name(head_name, gix::remote::Direction::Fetch) {
+            Some(Ok(t)) => t,
+            _ => return UpstreamState::None,
+        };
 
-    let head_id = repo.head_id().ok()?.detach();
-    let upstream_id = repo
+    let upstream_id = match repo
         .find_reference(tracking.as_ref())
-        .ok()?
-        .peel_to_id()
-        .ok()?
-        .detach();
-
-    let count_walk = |from: gix::ObjectId, hide: gix::ObjectId| -> Option<u32> {
-        let walk = repo.rev_walk([from]).with_hidden([hide]).all().ok()?;
-        Some(walk.filter_map(Result::ok).count() as u32)
+        .ok()
+        .and_then(|mut r| r.peel_to_id().ok())
+    {
+        Some(id) => id.detach(),
+        None => return UpstreamState::Gone,
     };
 
-    Some((
-        count_walk(head_id, upstream_id).unwrap_or(0),
-        count_walk(upstream_id, head_id).unwrap_or(0),
-    ))
+    let head_id = match repo.head_id() {
+        Ok(id) => id.detach(),
+        Err(_) => return UpstreamState::None,
+    };
+
+    let count_walk = |from: gix::ObjectId, hide: gix::ObjectId| -> u32 {
+        repo.rev_walk([from])
+            .with_hidden([hide])
+            .all()
+            .ok()
+            .map(|walk| walk.filter_map(Result::ok).count() as u32)
+            .unwrap_or(0)
+    };
+
+    UpstreamState::Tracking {
+        ahead: count_walk(head_id, upstream_id),
+        behind: count_walk(upstream_id, head_id),
+    }
 }
 
 // Iterates gix's parallel status engine until either:
@@ -348,24 +367,31 @@ fn write_status_file(
     let tmp = path.with_extension("tmp");
     {
         let mut f = std::fs::File::create(&tmp)?;
-        // Each field NUL-terminated. 6 fields:
-        //   request_path, branch, ahead, behind, dirty, operation
-        // For non-repos, the last 5 fields are empty. Operation is empty when
-        // no operation is in progress.
+        // Each field NUL-terminated. 7 fields:
+        //   request_path, branch, ahead, behind, dirty, operation, upstream
+        // For non-repos, the last 6 fields are empty. ahead/behind are "0"
+        // when no upstream or upstream is gone; the upstream field carries
+        // the qualitative signal.
         f.write_all(request_path.as_os_str().as_bytes())?;
         f.write_all(b"\0")?;
         if let Some(s) = status {
+            let (ahead, behind, upstream_label) = match s.upstream {
+                UpstreamState::Tracking { ahead, behind } => (ahead, behind, ""),
+                UpstreamState::Gone => (0, 0, "gone"),
+                UpstreamState::None => (0, 0, ""),
+            };
             write!(
                 f,
-                "{}\0{}\0{}\0{}\0{}\0",
+                "{}\0{}\0{}\0{}\0{}\0{}\0",
                 s.branch,
-                s.ahead,
-                s.behind,
+                ahead,
+                behind,
                 s.dirty.as_byte(),
                 s.operation.unwrap_or(""),
+                upstream_label,
             )?;
         } else {
-            f.write_all(b"\0\0\0\0\0")?;
+            f.write_all(b"\0\0\0\0\0\0")?;
         }
     }
     std::fs::rename(&tmp, path)?;
