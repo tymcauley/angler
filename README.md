@@ -16,7 +16,8 @@ Two-line layout: path + git + command duration on line 1 (left), environmental i
 Line 1 left:
 
 - **red bold** `host:` prefix when SSH'd in (short hostname, signaling that the path that follows is on a remote machine)
-- **cyan** abbreviated working directory (and `[N]` in red after it if the last command exited non-zero)
+- **cyan** abbreviated working directory — Hydro-style: truncated parent components in plain cyan, the directory you're actually in in **bold cyan** (separately configurable as `_fp_color_path` and `_fp_color_path_tail`)
+- `[N]` in red after the path if the last command exited non-zero
 - **yellow** branch name (or 7-char SHA if detached)
 - `↑N` commits ahead of upstream, `↓N` behind
 - **red** `↯` if the upstream tracking branch is gone (typically a deleted remote branch you can prune)
@@ -87,13 +88,19 @@ set -g _fp_symbol_stash     '≡'   # blue, stash count
 set -g _fp_symbol_prompt    '❯'
 ```
 
-Colors are `set_color` arguments stored as fish lists, so multi-arg styles work directly:
+Colors are `set_color` arguments stored as fish lists, so multi-arg styles work directly.
+Most defaults are bolded for a Hydro-like overall weight; time and duration intentionally stay plain so they read as background metadata.
 
 ```fish
-set -g _fp_color_branch    yellow
-set -g _fp_color_path      cyan
-set -g _fp_color_conflict  red --bold
+set -g _fp_color_path       cyan          # path prefix (truncated parent dirs)
+set -g _fp_color_path_tail  cyan --bold   # last path component, emphasized
+set -g _fp_color_branch     yellow --bold
+set -g _fp_color_prompt     green --bold  # the line-2 prompt symbol
+set -g _fp_color_time       brblack       # plain, intentionally
+set -g _fp_color_duration   yellow        # plain, intentionally
 ```
+
+Drop `--bold` from any of these if you want a less-heavy look.
 
 Toggles (1 to show, anything else to hide):
 

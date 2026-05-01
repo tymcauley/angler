@@ -22,27 +22,35 @@ set -q _fp_symbol_vi_replace; or set -g _fp_symbol_vi_replace 'R'
 
 # Colors. Stored as lists so multi-arg styles like `red --bold` work directly
 # when expanded into `set_color`.
+# Path is rendered split: prefix (truncated dirs) in _fp_color_path, the last
+# component in _fp_color_path_tail. Hydro-style emphasis on the directory you
+# actually care about. Both default to cyan; the tail is bold.
 set -q _fp_color_path;      or set -g _fp_color_path      cyan
-set -q _fp_color_branch;    or set -g _fp_color_branch    yellow
-set -q _fp_color_operation; or set -g _fp_color_operation magenta
-set -q _fp_color_modified;  or set -g _fp_color_modified  red
-set -q _fp_color_staged;    or set -g _fp_color_staged    green
-set -q _fp_color_untracked; or set -g _fp_color_untracked yellow
+set -q _fp_color_path_tail; or set -g _fp_color_path_tail cyan --bold
+
+# Most colored elements default to bold for a Hydro-like overall weight; time
+# and duration intentionally stay plain so they read as background metadata.
+set -q _fp_color_branch;    or set -g _fp_color_branch    yellow --bold
+set -q _fp_color_operation; or set -g _fp_color_operation magenta --bold
+set -q _fp_color_modified;  or set -g _fp_color_modified  red --bold
+set -q _fp_color_staged;    or set -g _fp_color_staged    green --bold
+set -q _fp_color_untracked; or set -g _fp_color_untracked yellow --bold
 set -q _fp_color_conflict;  or set -g _fp_color_conflict  red --bold
-set -q _fp_color_unknown;   or set -g _fp_color_unknown   yellow
-set -q _fp_color_ahead;     or set -g _fp_color_ahead     yellow
-set -q _fp_color_behind;    or set -g _fp_color_behind    yellow
-set -q _fp_color_gone;      or set -g _fp_color_gone      red
-set -q _fp_color_stash;     or set -g _fp_color_stash     blue
-set -q _fp_color_exit_code; or set -g _fp_color_exit_code red
+set -q _fp_color_unknown;   or set -g _fp_color_unknown   yellow --bold
+set -q _fp_color_ahead;     or set -g _fp_color_ahead     yellow --bold
+set -q _fp_color_behind;    or set -g _fp_color_behind    yellow --bold
+set -q _fp_color_gone;      or set -g _fp_color_gone      red --bold
+set -q _fp_color_stash;     or set -g _fp_color_stash     blue --bold
+set -q _fp_color_exit_code; or set -g _fp_color_exit_code red --bold
 set -q _fp_color_time;      or set -g _fp_color_time      brblack
 set -q _fp_color_duration;  or set -g _fp_color_duration  yellow
 set -q _fp_color_ssh;       or set -g _fp_color_ssh       red --bold
-set -q _fp_color_venv;      or set -g _fp_color_venv      blue
-set -q _fp_color_direnv;    or set -g _fp_color_direnv    green
-set -q _fp_color_vi_default; or set -g _fp_color_vi_default green
-set -q _fp_color_vi_visual;  or set -g _fp_color_vi_visual  magenta
-set -q _fp_color_vi_replace; or set -g _fp_color_vi_replace red
+set -q _fp_color_venv;      or set -g _fp_color_venv      blue --bold
+set -q _fp_color_direnv;    or set -g _fp_color_direnv    green --bold
+set -q _fp_color_prompt;    or set -g _fp_color_prompt    green --bold
+set -q _fp_color_vi_default; or set -g _fp_color_vi_default green --bold
+set -q _fp_color_vi_visual;  or set -g _fp_color_vi_visual  magenta --bold
+set -q _fp_color_vi_replace; or set -g _fp_color_vi_replace red --bold
 
 # Toggles (1 = show, anything else = hide).
 set -q _fp_show_ahead_behind;       or set -g _fp_show_ahead_behind       1

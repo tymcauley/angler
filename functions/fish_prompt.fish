@@ -34,7 +34,18 @@ function _fp_render_left --argument-names last_status cmd_duration
         set buf $buf (set_color $_fp_color_ssh) (prompt_hostname)":" (set_color normal)
     end
 
-    set buf $buf (set_color $_fp_color_path) (prompt_pwd) (set_color normal)
+    # Render the path with the last component emphasized. `prompt_pwd` returns
+    # something like `~/c/fish-prompt`; we color the prefix (`~/c/`) with
+    # `_fp_color_path` and the tail (`fish-prompt`) with `_fp_color_path_tail`.
+    set -l pwd_str (prompt_pwd)
+    set -l parts (string split / -- $pwd_str)
+    set -l tail $parts[-1]
+    if test (count $parts) -gt 1
+        set -l prefix (string join / -- $parts[1..-2])/
+        set buf $buf (set_color $_fp_color_path) $prefix (set_color $_fp_color_path_tail) $tail (set_color normal)
+    else
+        set buf $buf (set_color $_fp_color_path_tail) $tail (set_color normal)
+    end
 
     if test "$last_status" -ne 0; and test "$_fp_show_exit_code" = 1
         set buf $buf (set_color $_fp_color_exit_code) " [$last_status]" (set_color normal)
@@ -183,5 +194,7 @@ function _fp_render_prompt_symbol
                 return
         end
     end
+    set_color $_fp_color_prompt
     printf '%s ' $_fp_symbol_prompt
+    set_color normal
 end
