@@ -97,7 +97,7 @@ set -g _fp_color_path_tail  cyan --bold   # last path component, emphasized
 set -g _fp_color_branch     yellow --bold
 set -g _fp_color_prompt     green --bold  # the line-2 prompt symbol
 set -g _fp_color_time       brblack       # plain, intentionally
-set -g _fp_color_duration   yellow        # plain, intentionally
+set -g _fp_color_duration   brblack       # plain, matches time
 ```
 
 Drop `--bold` from any of these if you want a less-heavy look.

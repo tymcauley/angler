@@ -43,7 +43,7 @@ set -q _fp_color_gone;      or set -g _fp_color_gone      red --bold
 set -q _fp_color_stash;     or set -g _fp_color_stash     blue --bold
 set -q _fp_color_exit_code; or set -g _fp_color_exit_code red --bold
 set -q _fp_color_time;      or set -g _fp_color_time      brblack
-set -q _fp_color_duration;  or set -g _fp_color_duration  yellow
+set -q _fp_color_duration;  or set -g _fp_color_duration  brblack
 set -q _fp_color_ssh;       or set -g _fp_color_ssh       red --bold
 set -q _fp_color_venv;      or set -g _fp_color_venv      blue --bold
 set -q _fp_color_direnv;    or set -g _fp_color_direnv    green --bold
