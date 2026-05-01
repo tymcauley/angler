@@ -115,7 +115,8 @@ impl DirtyState {
 fn compute_status(path: &Path, dirty_deadline: Duration) -> Option<Status> {
     let repo = gix::discover(path).ok()?;
 
-    let branch = match repo.head_name().ok().flatten() {
+    let head_name = repo.head_name().ok().flatten();
+    let branch = match &head_name {
         Some(name) => name.shorten().to_string(),
         None => match repo.head_id() {
             Ok(id) => id.to_hex_with_len(7).to_string(),
@@ -123,12 +124,47 @@ fn compute_status(path: &Path, dirty_deadline: Duration) -> Option<Status> {
         },
     };
 
+    let (ahead, behind) = head_name
+        .as_ref()
+        .and_then(|n| compute_ahead_behind(&repo, n.as_ref()))
+        .unwrap_or((0, 0));
+
     Some(Status {
         branch,
-        ahead: 0,
-        behind: 0,
+        ahead,
+        behind,
         dirty: compute_dirty(&repo, dirty_deadline),
     })
+}
+
+// Returns (ahead, behind) for `head_name` against its configured upstream
+// tracking branch. Returns None on any failure (no upstream, gone upstream,
+// missing refs, etc.) so the caller can fall through to (0, 0).
+fn compute_ahead_behind(
+    repo: &gix::Repository,
+    head_name: &gix::refs::FullNameRef,
+) -> Option<(u32, u32)> {
+    let tracking = repo
+        .branch_remote_tracking_ref_name(head_name, gix::remote::Direction::Fetch)?
+        .ok()?;
+
+    let head_id = repo.head_id().ok()?.detach();
+    let upstream_id = repo
+        .find_reference(tracking.as_ref())
+        .ok()?
+        .peel_to_id()
+        .ok()?
+        .detach();
+
+    let count_walk = |from: gix::ObjectId, hide: gix::ObjectId| -> Option<u32> {
+        let walk = repo.rev_walk([from]).with_hidden([hide]).all().ok()?;
+        Some(walk.filter_map(Result::ok).count() as u32)
+    };
+
+    Some((
+        count_walk(head_id, upstream_id).unwrap_or(0),
+        count_walk(upstream_id, head_id).unwrap_or(0),
+    ))
 }
 
 // Iterates gix's parallel status engine until either:

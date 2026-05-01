@@ -9,7 +9,7 @@ name = "fish-prompt-daemon"
 path = "src/main.rs"
 
 [dependencies]
-gix = { version = "0.83", default-features = false, features = ["status", "max-performance-safe", "sha1"] }
+gix = { version = "0.83", default-features = false, features = ["status", "revision", "max-performance-safe", "sha1"] }
 libc = "0.2"
 
 [dev-dependencies]

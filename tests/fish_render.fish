@@ -80,6 +80,22 @@ set -l out (fish_prompt | string collect)
 assert_contains "$out" "main" "renders branch when dirty unknown"
 assert_contains "$out" "?" "renders question mark when dirty=?"
 
+write_status /tmp main 3 0 0
+set -l out (fish_prompt | string collect)
+assert_contains "$out" "↑3" "renders up-arrow with ahead count"
+assert_not_contains "$out" "↓" "no down-arrow when behind=0"
+
+write_status /tmp main 0 2 0
+set -l out (fish_prompt | string collect)
+assert_contains "$out" "↓2" "renders down-arrow with behind count"
+assert_not_contains "$out" "↑" "no up-arrow when ahead=0"
+
+write_status /tmp main 1 4 1
+set -l out (fish_prompt | string collect)
+assert_contains "$out" "↑1" "diverged: renders ahead"
+assert_contains "$out" "↓4" "diverged: renders behind"
+assert_contains "$out" "*" "diverged: still renders dirty"
+
 write_status /some/other/dir main 0 0 1
 set -l out (fish_prompt | string collect)
 assert_not_contains "$out" "main" "skips git block when reported_path != PWD"

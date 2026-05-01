@@ -171,6 +171,81 @@ fn make_clean_repo() -> TempDir {
     dir
 }
 
+fn rev_parse(repo: &Path, rev: &str) -> String {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(["rev-parse", rev])
+        .output()
+        .unwrap();
+    String::from_utf8(out.stdout).unwrap().trim().to_owned()
+}
+
+// Build a repo where main has `ahead` commits past the synthetic upstream and
+// the upstream has `behind` commits past main's fork point. No real remote is
+// involved — we fabricate refs/remotes/origin/main directly via update-ref and
+// configure branch.main.{remote,merge} so gix treats it as the upstream.
+fn make_repo_with_upstream(ahead: u32, behind: u32) -> TempDir {
+    let dir = tempfile::tempdir().unwrap();
+    git(dir.path(), &["init", "-q", "-b", "main"]);
+    std::fs::write(dir.path().join("base.txt"), b"base\n").unwrap();
+    git(dir.path(), &["add", "base.txt"]);
+    git(dir.path(), &["commit", "-q", "-m", "base"]);
+    let fork_point = rev_parse(dir.path(), "HEAD");
+
+    // Build the upstream side first (so we can capture its tip), then reset
+    // local main back to the fork point and build the local-only commits.
+    for i in 0..behind {
+        let name = format!("upstream-{i}.txt");
+        std::fs::write(dir.path().join(&name), b"x\n").unwrap();
+        git(dir.path(), &["add", &name]);
+        git(
+            dir.path(),
+            &["commit", "-q", "-m", &format!("upstream {i}")],
+        );
+    }
+    let upstream_tip = rev_parse(dir.path(), "HEAD");
+
+    git(
+        dir.path(),
+        &["update-ref", "refs/remotes/origin/main", &upstream_tip],
+    );
+    git(dir.path(), &["reset", "-q", "--hard", &fork_point]);
+
+    for i in 0..ahead {
+        let name = format!("local-{i}.txt");
+        std::fs::write(dir.path().join(&name), b"x\n").unwrap();
+        git(dir.path(), &["add", &name]);
+        git(dir.path(), &["commit", "-q", "-m", &format!("local {i}")]);
+    }
+
+    git(dir.path(), &["config", "branch.main.remote", "origin"]);
+    git(
+        dir.path(),
+        &["config", "branch.main.merge", "refs/heads/main"],
+    );
+    // gix's branch_remote_tracking_ref_name resolves the remote in full, which
+    // requires a URL even though we never fetch anything.
+    git(
+        dir.path(),
+        &[
+            "config",
+            "remote.origin.url",
+            "git@example.invalid:placeholder.git",
+        ],
+    );
+    git(
+        dir.path(),
+        &[
+            "config",
+            "remote.origin.fetch",
+            "+refs/heads/*:refs/remotes/origin/*",
+        ],
+    );
+
+    dir
+}
+
 fn make_dirty_repo() -> TempDir {
     let dir = make_clean_repo();
     std::fs::write(dir.path().join("a.txt"), b"changed\n").unwrap();
@@ -261,6 +336,57 @@ fn detached_head_reports_short_sha() {
         "expected hex sha, got {:?}",
         f.branch,
     );
+}
+
+#[test]
+fn ahead_only_reports_correct_count() {
+    let h = Harness::new();
+    let repo = make_repo_with_upstream(3, 0);
+    h.request(repo.path());
+    let f = h.wait_for(repo.path());
+    assert_eq!(f.ahead, "3");
+    assert_eq!(f.behind, "0");
+}
+
+#[test]
+fn behind_only_reports_correct_count() {
+    let h = Harness::new();
+    let repo = make_repo_with_upstream(0, 2);
+    h.request(repo.path());
+    let f = h.wait_for(repo.path());
+    assert_eq!(f.ahead, "0");
+    assert_eq!(f.behind, "2");
+}
+
+#[test]
+fn diverged_reports_both_counts() {
+    let h = Harness::new();
+    let repo = make_repo_with_upstream(2, 4);
+    h.request(repo.path());
+    let f = h.wait_for(repo.path());
+    assert_eq!(f.ahead, "2");
+    assert_eq!(f.behind, "4");
+}
+
+#[test]
+fn no_upstream_reports_zero() {
+    let h = Harness::new();
+    // make_clean_repo has no remote configured.
+    let repo = make_clean_repo();
+    h.request(repo.path());
+    let f = h.wait_for(repo.path());
+    assert_eq!(f.ahead, "0");
+    assert_eq!(f.behind, "0");
+}
+
+#[test]
+fn detached_head_reports_zero_ahead_behind() {
+    let h = Harness::new();
+    let repo = make_detached_head_repo();
+    h.request(repo.path());
+    let f = h.wait_for(repo.path());
+    assert_eq!(f.ahead, "0");
+    assert_eq!(f.behind, "0");
 }
 
 #[test]
