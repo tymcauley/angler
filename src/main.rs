@@ -1,4 +1,3 @@
-use std::collections::VecDeque;
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
@@ -11,7 +10,6 @@ use notify_debouncer_full::{new_debouncer, DebounceEventResult, Debouncer, FileI
 
 const DEFAULT_DIRTY_DEADLINE: Duration = Duration::from_millis(200);
 const DEBOUNCE: Duration = Duration::from_millis(150);
-const MAX_WATCHED_REPOS: usize = 16;
 
 enum Event {
     Request(PathBuf),
@@ -78,12 +76,13 @@ fn main() {
         })
         .expect("create debouncer");
 
-    // git_dir paths in least-recently-touched order; back is most recent.
-    let mut watched: VecDeque<PathBuf> = VecDeque::new();
-    // The current PWD fish has told us about. We render and re-render against
-    // this; watcher fires that don't pertain to it produce no visible effect
-    // because of fish_prompt's path-match guard.
+    // The current PWD fish has told us about, and the git_dir of its repo (if
+    // any). We render against current_pwd and only watch one repo at a time —
+    // we never display anything for a previously-visited repo, so keeping its
+    // watches alive would just produce wasted re-renders that fish_prompt's
+    // path-match guard discards.
     let mut current_pwd: Option<PathBuf> = None;
+    let mut watched_git_dir: Option<PathBuf> = None;
 
     while let Ok(event) = rx.recv() {
         match event {
@@ -92,16 +91,28 @@ fn main() {
                 current_pwd = Some(path.clone());
                 let repo = gix::discover(&path).ok();
 
+                // Install the watch BEFORE rendering. Otherwise a fish caller
+                // can observe the post-request status file, immediately mutate
+                // the repo (e.g., `git commit`), and have that change land in
+                // the gap between rendering and watch_repo — so the daemon
+                // never sees the event and the prompt goes stale.
+                let new_git_dir = repo.as_ref().map(|r| r.git_dir().to_path_buf());
+                if new_git_dir != watched_git_dir {
+                    if let Some(old) = watched_git_dir.take() {
+                        unwatch_repo(&mut debouncer, &old);
+                    }
+                    if let Some(ref new) = new_git_dir {
+                        if watch_repo(&mut debouncer, new).is_ok() {
+                            watched_git_dir = Some(new.clone());
+                        }
+                    }
+                }
+
                 let status = repo
                     .as_ref()
                     .and_then(|r| compute_status_for_repo(r, dirty_deadline));
                 let _ = write_status_file(&status_file, &path, status.as_ref());
                 signal_fish(fish_pid);
-
-                if let Some(repo) = repo {
-                    let git_dir = repo.git_dir().to_path_buf();
-                    touch_or_add(&mut watched, &mut debouncer, git_dir);
-                }
             }
             Event::WatcherFired => {
                 let Some(pwd) = current_pwd.as_deref() else {
@@ -165,29 +176,6 @@ fn spawn_watchdog() {
     });
 }
 
-// Move repo to back of LRU; if new, register watches and evict oldest if over
-// the cap.
-fn touch_or_add(
-    watched: &mut VecDeque<PathBuf>,
-    debouncer: &mut Debouncer<notify::RecommendedWatcher, FileIdMap>,
-    git_dir: PathBuf,
-) {
-    if let Some(pos) = watched.iter().position(|p| p == &git_dir) {
-        watched.remove(pos);
-        watched.push_back(git_dir);
-        return;
-    }
-    if watch_repo(debouncer, &git_dir).is_err() {
-        return;
-    }
-    watched.push_back(git_dir);
-    while watched.len() > MAX_WATCHED_REPOS {
-        if let Some(oldest) = watched.pop_front() {
-            let _ = unwatch_repo(debouncer, &oldest);
-        }
-    }
-}
-
 // Watch the small set of paths inside .git that meaningfully change git status:
 //   - .git itself non-recursively → catches HEAD, index, packed-refs, MERGE_HEAD
 //     (and avoids watching .git/objects which is large and noisy).
@@ -205,13 +193,9 @@ fn watch_repo(
     Ok(())
 }
 
-fn unwatch_repo(
-    debouncer: &mut Debouncer<notify::RecommendedWatcher, FileIdMap>,
-    git_dir: &Path,
-) -> Result<(), notify::Error> {
+fn unwatch_repo(debouncer: &mut Debouncer<notify::RecommendedWatcher, FileIdMap>, git_dir: &Path) {
     let _ = debouncer.unwatch(git_dir);
     let _ = debouncer.unwatch(git_dir.join("refs"));
-    Ok(())
 }
 
 struct Status {

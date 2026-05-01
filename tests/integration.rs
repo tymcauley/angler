@@ -426,8 +426,10 @@ fn fsmonitor_picks_up_branch_change_without_new_request() {
     // daemon's watch set. We expect the daemon to re-emit on its own.
     git(repo.path(), &["checkout", "-q", "-b", "feature"]);
 
+    // Generous budget: macOS FSEvents has its own coalescing latency on top
+    // of our 150ms debounce, plus the recompute time.
     let updated = h
-        .wait_until(Duration::from_secs(3), |f| f.branch == "feature")
+        .wait_until(Duration::from_secs(5), |f| f.branch == "feature")
         .expect("daemon should have observed the branch change via fsmonitor");
     assert_eq!(updated.path, repo.path());
     assert_eq!(updated.branch, "feature");
