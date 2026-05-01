@@ -47,6 +47,53 @@ fisher remove jorgebucaran/hydro    # or whatever you have
 
 then `exec fish`.
 
+## Configuration
+
+All knobs are fish global variables.
+Set them in your `config.fish` (sourced after our `conf.d/`) and they'll override the defaults; otherwise the defaults apply.
+
+Symbols:
+
+```fish
+set -g _fp_symbol_modified  '*'   # red, unstaged tracked changes
+set -g _fp_symbol_staged    '+'   # green, changes added but not committed
+set -g _fp_symbol_untracked '?'   # yellow, untracked files
+set -g _fp_symbol_conflict  '!'   # red bold, merge/rebase conflict
+set -g _fp_symbol_unknown   '?'   # yellow, dirty deadline expired
+set -g _fp_symbol_ahead     '↑'   # commits ahead of upstream
+set -g _fp_symbol_behind    '↓'   # commits behind upstream
+set -g _fp_symbol_gone      '↯'   # red, upstream branch is gone
+set -g _fp_symbol_stash     '≡'   # blue, stash count
+set -g _fp_symbol_prompt    '❯'
+```
+
+Colors are `set_color` arguments stored as fish lists, so multi-arg styles work directly:
+
+```fish
+set -g _fp_color_branch    yellow
+set -g _fp_color_path      cyan
+set -g _fp_color_conflict  red --bold
+```
+
+Toggles (1 to show, anything else to hide):
+
+```fish
+set -g _fp_show_ahead_behind 1
+set -g _fp_show_stash        1
+set -g _fp_show_operation    1
+set -g _fp_show_exit_code    1
+```
+
+Daemon tuning:
+
+```fish
+set -g _fp_dirty_deadline_ms 200   # how long to wait synchronously before
+                                   # falling back to a deferred result
+```
+
+Setting any of these in `config.fish` and running `exec fish` is enough to apply.
+Per-session overrides also work — just `set -g` in the running shell and the next prompt picks them up.
+
 ## Uninstall
 
 ```sh

@@ -5,6 +5,11 @@
 set -l repo_root (realpath (dirname (status filename))/..)
 set -ga fish_function_path $repo_root/functions
 
+# Source conf.d to pick up the symbol/color/toggle defaults. The interactive
+# gate inside it short-circuits before the daemon-spawn block, so this is safe
+# in scripted mode.
+source $repo_root/conf.d/fish-prompt.fish
+
 # Per-test scratch state
 set -g _fp_status_file (command mktemp)
 function _cleanup --on-event fish_exit
@@ -161,6 +166,52 @@ assert_not_contains "$out" "*" "no dirty marker on path mismatch"
 write_status /tmp '' '' '' '' '' '' ''
 set -l out (fish_prompt | string collect)
 assert_not_contains "$out" '*' "no dirty marker for non-repo (empty branch)"
+
+# ----- config knob overrides -----
+
+# Override symbol: dirty modified → 'M'
+set -g _fp_symbol_modified M
+write_status /tmp main 0 0 '*' '' '' 0
+set -l out (fish_prompt | string collect)
+assert_contains "$out" M "custom dirty symbol overrides default"
+assert_not_contains "$out" '*' "default '*' replaced by custom symbol"
+set -g _fp_symbol_modified '*'
+
+# Override symbol: ahead glyph
+set -g _fp_symbol_ahead UP
+write_status /tmp main 3 0 0 '' '' 0
+set -l out (fish_prompt | string collect)
+assert_contains "$out" UP3 "custom ahead symbol overrides default"
+set -g _fp_symbol_ahead '↑'
+
+# Toggle off ahead/behind
+set -g _fp_show_ahead_behind 0
+write_status /tmp main 5 7 0 '' '' 0
+set -l out (fish_prompt | string collect)
+assert_not_contains "$out" 5 "ahead count hidden when _fp_show_ahead_behind=0"
+assert_not_contains "$out" 7 "behind count hidden when _fp_show_ahead_behind=0"
+set -g _fp_show_ahead_behind 1
+
+# Toggle off stash
+set -g _fp_show_stash 0
+write_status /tmp main 0 0 0 '' '' 4
+set -l out (fish_prompt | string collect)
+assert_not_contains "$out" 4 "stash count hidden when _fp_show_stash=0"
+set -g _fp_show_stash 1
+
+# Toggle off operation
+set -g _fp_show_operation 0
+write_status /tmp main 0 0 0 rebasing '' 0
+set -l out (fish_prompt | string collect)
+assert_not_contains "$out" rebasing "operation hidden when _fp_show_operation=0"
+set -g _fp_show_operation 1
+
+# Override prompt symbol
+set -g _fp_symbol_prompt '%'
+write_status /tmp main 0 0 0 '' '' 0
+set -l out (fish_prompt | string collect)
+assert_contains "$out" '%' "custom prompt symbol overrides default"
+set -g _fp_symbol_prompt '❯'
 
 # Empty status file: must not crash and must produce a prompt.
 command truncate -s 0 $_fp_status_file
