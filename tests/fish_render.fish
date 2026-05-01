@@ -71,10 +71,36 @@ assert_not_contains "$out" "*" "no dirty marker when dirty=0"
 assert_not_contains "$out" "?" "no unknown marker when dirty=0"
 assert_not_contains "$out" "≡" "no stash glyph when stash=0"
 
-write_status /tmp my-feature-branch 0 0 1 '' '' 0
+write_status /tmp my-feature-branch 0 0 '*' '' '' 0
 set -l out (fish_prompt | string collect)
 assert_contains "$out" "my-feature-branch" "renders distinctive branch name"
-assert_contains "$out" "*" "renders red asterisk when dirty=1"
+assert_contains "$out" "*" "renders red asterisk for modified flag"
+
+write_status /tmp main 0 0 '+' '' '' 0
+set -l out (fish_prompt | string collect)
+assert_contains "$out" "+" "renders + for staged flag"
+assert_not_contains "$out" "*" "no * when only staged"
+
+write_status /tmp main 0 0 'u' '' '' 0
+set -l out (fish_prompt | string collect)
+assert_contains "$out" "?" "renders ? for untracked flag"
+assert_not_contains "$out" "*" "no * when only untracked"
+
+write_status /tmp main 0 0 '!' '' '' 0
+set -l out (fish_prompt | string collect)
+assert_contains "$out" "!" "renders ! for conflict flag"
+
+write_status /tmp main 0 0 '+*' '' '' 0
+set -l out (fish_prompt | string collect)
+assert_contains "$out" "+" "combo: staged"
+assert_contains "$out" "*" "combo: modified"
+
+write_status /tmp main 0 0 '+*u!' '' '' 0
+set -l out (fish_prompt | string collect)
+assert_contains "$out" "+" "all four: staged"
+assert_contains "$out" "*" "all four: modified"
+assert_contains "$out" "?" "all four: untracked"
+assert_contains "$out" "!" "all four: conflict"
 
 write_status /tmp main 0 0 '?' '' '' 0
 set -l out (fish_prompt | string collect)
@@ -91,7 +117,7 @@ set -l out (fish_prompt | string collect)
 assert_contains "$out" "↓2" "renders down-arrow with behind count"
 assert_not_contains "$out" "↑" "no up-arrow when ahead=0"
 
-write_status /tmp main 1 4 1 '' '' 0
+write_status /tmp main 1 4 '*' '' '' 0
 set -l out (fish_prompt | string collect)
 assert_contains "$out" "↑1" "diverged: renders ahead"
 assert_contains "$out" "↓4" "diverged: renders behind"
@@ -101,7 +127,7 @@ write_status /tmp main 0 0 0 rebasing '' 0
 set -l out (fish_prompt | string collect)
 assert_contains "$out" "(rebasing)" "renders operation marker in parens"
 
-write_status /tmp main 2 0 1 merging '' 0
+write_status /tmp main 2 0 '*' merging '' 0
 set -l out (fish_prompt | string collect)
 assert_contains "$out" "(merging)" "operation alongside ahead+dirty"
 assert_contains "$out" "↑2" "operation does not displace ahead"
@@ -111,7 +137,7 @@ write_status /tmp main 0 0 0 '' gone 0
 set -l out (fish_prompt | string collect)
 assert_contains "$out" "↯" "renders gone-upstream glyph"
 
-write_status /tmp main 2 0 1 '' gone 0
+write_status /tmp main 2 0 '*' '' gone 0
 set -l out (fish_prompt | string collect)
 assert_contains "$out" "↯" "gone-upstream glyph alongside other markers"
 assert_contains "$out" "↑2" "gone-upstream does not displace ahead"
@@ -121,13 +147,13 @@ write_status /tmp main 0 0 0 '' '' 3
 set -l out (fish_prompt | string collect)
 assert_contains "$out" "≡3" "renders stash glyph with count"
 
-write_status /tmp main 1 0 1 '' '' 2
+write_status /tmp main 1 0 '*' '' '' 2
 set -l out (fish_prompt | string collect)
 assert_contains "$out" "≡2" "stash alongside other markers"
 assert_contains "$out" "↑1" "stash does not displace ahead"
 assert_contains "$out" "*" "stash does not displace dirty"
 
-write_status /some/other/dir main 0 0 1 '' '' 0
+write_status /some/other/dir main 0 0 '*' '' '' 0
 set -l out (fish_prompt | string collect)
 assert_not_contains "$out" "main" "skips git block when reported_path != PWD"
 assert_not_contains "$out" "*" "no dirty marker on path mismatch"

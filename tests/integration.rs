@@ -370,7 +370,43 @@ fn dirty_repo_reports_dirty() {
     h.request(repo.path());
     let f = h.wait_for(repo.path());
     assert_eq!(f.branch, "main");
-    assert_eq!(f.dirty, "1");
+    // Modified tracked file → 'modified' flag only.
+    assert_eq!(f.dirty, "*");
+}
+
+#[test]
+fn untracked_file_shows_untracked_flag() {
+    let h = Harness::new();
+    let repo = make_clean_repo();
+    std::fs::write(repo.path().join("new.txt"), b"hello\n").unwrap();
+    h.request(repo.path());
+    let f = h.wait_for(repo.path());
+    assert_eq!(f.dirty, "u");
+}
+
+#[test]
+fn staged_change_shows_staged_flag() {
+    let h = Harness::new();
+    let repo = make_clean_repo();
+    std::fs::write(repo.path().join("a.txt"), b"changed\n").unwrap();
+    git(repo.path(), &["add", "a.txt"]);
+    h.request(repo.path());
+    let f = h.wait_for(repo.path());
+    assert_eq!(f.dirty, "+");
+}
+
+#[test]
+fn staged_plus_modified_shows_both_flags() {
+    let h = Harness::new();
+    let repo = make_clean_repo();
+    std::fs::write(repo.path().join("a.txt"), b"first edit\n").unwrap();
+    git(repo.path(), &["add", "a.txt"]);
+    // Now modify on top of the staged version → both staged and modified.
+    std::fs::write(repo.path().join("a.txt"), b"second edit\n").unwrap();
+    h.request(repo.path());
+    let f = h.wait_for(repo.path());
+    // Order in the wire encoding is staged then modified.
+    assert_eq!(f.dirty, "+*");
 }
 
 #[test]
@@ -604,7 +640,7 @@ fn multiple_requests_in_sequence() {
 
     h.request(dirty.path());
     let f = h.wait_for(dirty.path());
-    assert_eq!(f.dirty, "1");
+    assert_eq!(f.dirty, "*");
 
     h.request(none.path());
     let f = h.wait_for(none.path());

@@ -39,13 +39,31 @@ function fish_prompt
                     set_color red
                     echo -n ' ↯'
                 end
-                switch $dirty
-                    case 1
-                        set_color red
-                        echo -n ' *'
-                    case '?'
-                        set_color yellow
-                        echo -n ' ?'
+                # Dirty wire encoding: "0" clean, "?" unknown, otherwise any
+                # combination of '+' staged, '*' modified, 'u' untracked,
+                # '!' conflict.
+                if test "$dirty" = '?'
+                    set_color yellow
+                    echo -n ' ?'
+                else if test -n "$dirty"; and test "$dirty" != 0
+                    for c in (string split '' -- $dirty)
+                        # Fish case patterns are globs — '*' would match
+                        # anything, so escape it.
+                        switch $c
+                            case '+'
+                                set_color green
+                                echo -n ' +'
+                            case '\*'
+                                set_color red
+                                echo -n ' *'
+                            case u
+                                set_color yellow
+                                echo -n ' ?'
+                            case '!'
+                                set_color red --bold
+                                echo -n ' !'
+                        end
+                    end
                 end
                 if test "$stash" != 0; and test -n "$stash"
                     set_color blue

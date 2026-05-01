@@ -216,19 +216,55 @@ enum UpstreamState {
     Gone,
 }
 
-#[derive(Copy, Clone)]
 enum DirtyState {
     Clean,
-    Dirty,
+    Dirty(DirtyFlags),
     Unknown,
 }
 
+#[derive(Default, Copy, Clone)]
+struct DirtyFlags {
+    staged: bool,
+    modified: bool,
+    untracked: bool,
+    conflict: bool,
+}
+
+impl DirtyFlags {
+    fn is_full(&self) -> bool {
+        self.staged && self.modified && self.untracked && self.conflict
+    }
+    fn any(&self) -> bool {
+        self.staged || self.modified || self.untracked || self.conflict
+    }
+}
+
 impl DirtyState {
-    fn as_byte(self) -> &'static str {
+    // Wire encoding for the `dirty` field:
+    //   ""  -> caller writes empty (only when not a repo)
+    //   "0" -> clean
+    //   "?" -> unknown (deadline expired before any item was seen)
+    //   otherwise any combination of '+', '*', 'u', '!' for the four flags.
+    fn encoded(&self) -> String {
         match self {
-            DirtyState::Clean => "0",
-            DirtyState::Dirty => "1",
-            DirtyState::Unknown => "?",
+            DirtyState::Clean => "0".into(),
+            DirtyState::Unknown => "?".into(),
+            DirtyState::Dirty(f) => {
+                let mut s = String::new();
+                if f.staged {
+                    s.push('+');
+                }
+                if f.modified {
+                    s.push('*');
+                }
+                if f.untracked {
+                    s.push('u');
+                }
+                if f.conflict {
+                    s.push('!');
+                }
+                s
+            }
         }
     }
 }
@@ -329,13 +365,14 @@ fn compute_upstream(repo: &gix::Repository, head_name: &gix::refs::FullNameRef) 
     }
 }
 
-// Iterates gix's parallel status engine until either:
-//   - an item is yielded (any change → Dirty, short-circuit)
-//   - the iterator drains naturally (Clean)
-//   - the deadline expires (Unknown — unless we already saw a change)
+// Iterates gix's parallel status engine, classifying each item into one of
+// four flags (staged / modified / untracked / conflict). Short-circuits once
+// all four are observed; otherwise drains until the deadline expires.
 //
-// The deadline is enforced via a timer thread that flips the AtomicBool
-// gix's workers periodically check.
+// Returns:
+//   - Dirty(flags) when at least one flag was observed
+//   - Unknown when no items were seen and the deadline expired
+//   - Clean when the iterator drained without any items
 fn compute_dirty(repo: &gix::Repository, deadline: Duration) -> DirtyState {
     let interrupt = Arc::new(AtomicBool::new(false));
     {
@@ -356,18 +393,44 @@ fn compute_dirty(repo: &gix::Repository, deadline: Duration) -> DirtyState {
         Err(_) => return DirtyState::Unknown,
     };
 
-    let mut found_change = false;
-    for item in iter {
-        if item.is_ok() {
-            found_change = true;
+    let mut flags = DirtyFlags::default();
+    for item in iter.flatten() {
+        classify_item(item, &mut flags);
+        if flags.is_full() {
             break;
         }
     }
 
-    match (found_change, interrupt.load(Ordering::SeqCst)) {
-        (true, _) => DirtyState::Dirty,
-        (false, true) => DirtyState::Unknown,
-        (false, false) => DirtyState::Clean,
+    if flags.any() {
+        DirtyState::Dirty(flags)
+    } else if interrupt.load(Ordering::SeqCst) {
+        DirtyState::Unknown
+    } else {
+        DirtyState::Clean
+    }
+}
+
+fn classify_item(item: gix::status::Item, flags: &mut DirtyFlags) {
+    use gix::status::index_worktree::Item as IWItem;
+    use gix::status::plumbing::index_as_worktree::EntryStatus;
+    use gix::status::Item;
+
+    match item {
+        Item::TreeIndex(_) => flags.staged = true,
+        Item::IndexWorktree(IWItem::Modification { status, .. }) => match status {
+            EntryStatus::Conflict { .. } => flags.conflict = true,
+            EntryStatus::Change(_) => flags.modified = true,
+            EntryStatus::NeedsUpdate(_) | EntryStatus::IntentToAdd => {}
+        },
+        Item::IndexWorktree(IWItem::DirectoryContents { entry, .. }) => {
+            if matches!(entry.status, gix::dir::entry::Status::Untracked) {
+                flags.untracked = true;
+            }
+        }
+        Item::IndexWorktree(IWItem::Rewrite { .. }) => {
+            // Renames present as a deletion + addition pair gix collapses into one.
+            flags.modified = true;
+        }
     }
 }
 
@@ -398,7 +461,7 @@ fn write_status_file(
                 s.branch,
                 ahead,
                 behind,
-                s.dirty.as_byte(),
+                s.dirty.encoded(),
                 s.operation.unwrap_or(""),
                 upstream_label,
                 s.stash,
