@@ -1,8 +1,10 @@
 .DEFAULT_GOAL := help
-.PHONY: help check test test-rust test-fish fmt-check lint build install
+.PHONY: help check test test-rust test-fish fmt-check lint build install install-fish uninstall
+
+FISH_CONFIG_DIR ?= $(or $(XDG_CONFIG_HOME),$(HOME)/.config)/fish
 
 help: ## Show this help
-	@awk 'BEGIN {FS = ":.*?## "} /^[a-zA-Z_-]+:.*?## / {printf "  %-12s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
+	@awk 'BEGIN {FS = ":.*?## "} /^[a-zA-Z_-]+:.*?## / {printf "  %-14s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
 
 check: fmt-check lint test ## Run fmt-check + lint + test (full pre-push verification)
 
@@ -23,5 +25,14 @@ lint: ## Run clippy with warnings as errors
 build: ## Build the daemon in release mode
 	cargo build --release
 
-install: build ## Install the daemon to ~/.cargo/bin
+install: install-fish ## Install daemon (~/.cargo/bin) and symlink fish files into FISH_CONFIG_DIR
 	cargo install --path .
+
+install-fish: ## Symlink conf.d/ and functions/ files into FISH_CONFIG_DIR
+	mkdir -p $(FISH_CONFIG_DIR)/conf.d $(FISH_CONFIG_DIR)/functions
+	ln -sf $(abspath conf.d/fish-prompt.fish) $(FISH_CONFIG_DIR)/conf.d/fish-prompt.fish
+	ln -sf $(abspath functions/fish_prompt.fish) $(FISH_CONFIG_DIR)/functions/fish_prompt.fish
+
+uninstall: ## Remove the symlinks (does not uninstall the binary; use `cargo uninstall fish-prompt`)
+	rm -f $(FISH_CONFIG_DIR)/conf.d/fish-prompt.fish
+	rm -f $(FISH_CONFIG_DIR)/functions/fish_prompt.fish
