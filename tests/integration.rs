@@ -420,13 +420,26 @@ fn non_repo_path_has_empty_git_fields() {
 }
 
 #[test]
-fn deadline_zero_forces_unknown() {
+fn deferred_dirty_resolves_after_deadline() {
+    // 0 ms deadline: recv_timeout fires immediately, so the initial response
+    // goes out as Unknown via the deferred path. The background worker keeps
+    // running and eventually delivers the real result via the main channel;
+    // the daemon re-emits and the status file flips to "*".
+    //
+    // We deliberately don't assert on the intermediate "?" state — on fast
+    // machines the deferred resolution can land before our polling reader
+    // observes the initial write. The deferred path's correctness is implied
+    // by the eventual "*": if deferral were broken, the file would stay at
+    // "?" and wait_until would time out.
     let h = Harness::with_args(&["--dirty-deadline-ms", "0"]);
     let repo = make_dirty_repo();
     h.request(repo.path());
-    let f = h.wait_for(repo.path());
-    assert_eq!(f.branch, "main");
-    assert_eq!(f.dirty, "?");
+
+    let resolved = h
+        .wait_until(Duration::from_secs(2), |f| f.dirty == "*")
+        .expect("deferred dirty should eventually resolve to '*'");
+    assert_eq!(resolved.path, repo.path());
+    assert_eq!(resolved.branch, "main");
 }
 
 #[test]

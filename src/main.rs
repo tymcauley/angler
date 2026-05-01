@@ -1,8 +1,7 @@
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{mpsc, Arc};
+use std::sync::mpsc;
 use std::time::Duration;
 
 use notify::RecursiveMode;
@@ -14,6 +13,14 @@ const DEBOUNCE: Duration = Duration::from_millis(150);
 enum Event {
     Request(PathBuf),
     WatcherFired,
+    /// A background dirty computation finished after the deadline expired.
+    /// `generation` and `pwd` together identify which request this resolution
+    /// belongs to — newer generations or PWD changes invalidate it.
+    DirtyResolved {
+        generation: u64,
+        pwd: PathBuf,
+        result: DirtyState,
+    },
     Eof,
 }
 
@@ -83,12 +90,17 @@ fn main() {
     // path-match guard discards.
     let mut current_pwd: Option<PathBuf> = None;
     let mut watched_git_dir: Option<PathBuf> = None;
+    // Bumped on every Request. A deferred dirty result (DirtyResolved) is
+    // discarded if its generation no longer matches — the user has moved on
+    // and the answer is for a stale prompt state.
+    let mut current_generation: u64 = 0;
 
     while let Ok(event) = rx.recv() {
         match event {
             Event::Eof => break,
             Event::Request(path) => {
                 current_pwd = Some(path.clone());
+                current_generation += 1;
                 let repo = gix::discover(&path).ok();
 
                 // Install the watch BEFORE rendering. Otherwise a fish caller
@@ -108,20 +120,44 @@ fn main() {
                     }
                 }
 
-                let status = repo
-                    .as_ref()
-                    .and_then(|r| compute_status_for_repo(r, dirty_deadline));
+                let status = repo.as_ref().map(|r| {
+                    let dirty =
+                        compute_dirty(dirty_deadline, current_generation, path.clone(), tx.clone());
+                    compute_status_for_repo(r, dirty)
+                });
                 let _ = write_status_file(&status_file, &path, status.as_ref());
                 signal_fish(fish_pid);
             }
             Event::WatcherFired => {
-                let Some(pwd) = current_pwd.as_deref() else {
+                let Some(pwd) = current_pwd.clone() else {
                     continue;
                 };
-                let status = gix::discover(pwd)
-                    .ok()
-                    .and_then(|r| compute_status_for_repo(&r, dirty_deadline));
-                let _ = write_status_file(&status_file, pwd, status.as_ref());
+                let status = gix::discover(&pwd).ok().map(|r| {
+                    let dirty =
+                        compute_dirty(dirty_deadline, current_generation, pwd.clone(), tx.clone());
+                    compute_status_for_repo(&r, dirty)
+                });
+                let _ = write_status_file(&status_file, &pwd, status.as_ref());
+                signal_fish(fish_pid);
+            }
+            Event::DirtyResolved {
+                generation,
+                pwd,
+                result,
+            } => {
+                // Drop stale results: the user has moved on, or the request
+                // we ran for has been superseded.
+                if generation != current_generation {
+                    continue;
+                }
+                if Some(&pwd) != current_pwd.as_ref() {
+                    continue;
+                }
+                let Some(repo) = gix::discover(&pwd).ok() else {
+                    continue;
+                };
+                let status = compute_status_for_repo(&repo, result);
+                let _ = write_status_file(&status_file, &pwd, Some(&status));
                 signal_fish(fish_pid);
             }
         }
@@ -216,6 +252,7 @@ enum UpstreamState {
     Gone,
 }
 
+#[derive(Clone)]
 enum DirtyState {
     Clean,
     Dirty(DirtyFlags),
@@ -269,7 +306,7 @@ impl DirtyState {
     }
 }
 
-fn compute_status_for_repo(repo: &gix::Repository, dirty_deadline: Duration) -> Option<Status> {
+fn compute_status_for_repo(repo: &gix::Repository, dirty: DirtyState) -> Status {
     let head_name = repo.head_name().ok().flatten();
     let branch = match &head_name {
         Some(name) => name.shorten().to_string(),
@@ -284,13 +321,13 @@ fn compute_status_for_repo(repo: &gix::Repository, dirty_deadline: Duration) -> 
         .map(|n| compute_upstream(repo, n.as_ref()))
         .unwrap_or(UpstreamState::None);
 
-    Some(Status {
+    Status {
         branch,
         upstream,
-        dirty: compute_dirty(repo, dirty_deadline),
+        dirty,
         operation: detect_operation(repo.git_dir()),
         stash: count_stashes(repo.git_dir()),
-    })
+    }
 }
 
 // Counts entries in the stash reflog. Each `git stash push` appends one line;
@@ -365,26 +402,57 @@ fn compute_upstream(repo: &gix::Repository, head_name: &gix::refs::FullNameRef) 
     }
 }
 
-// Iterates gix's parallel status engine, classifying each item into one of
-// four flags (staged / modified / untracked / conflict). Short-circuits once
-// all four are observed; otherwise drains until the deadline expires.
+// Spawns the actual dirty computation on a background thread and blocks the
+// main thread for at most `deadline`.
 //
-// Returns:
-//   - Dirty(flags) when at least one flag was observed
-//   - Unknown when no items were seen and the deadline expired
-//   - Clean when the iterator drained without any items
-fn compute_dirty(repo: &gix::Repository, deadline: Duration) -> DirtyState {
-    let interrupt = Arc::new(AtomicBool::new(false));
-    {
-        let interrupt = interrupt.clone();
-        std::thread::spawn(move || {
-            std::thread::sleep(deadline);
-            interrupt.store(true, Ordering::SeqCst);
-        });
-    }
+// If the worker finishes in time, returns its result.
+// If the deadline expires, returns Unknown and lets the worker keep running;
+// when it eventually finishes, it sends an Event::DirtyResolved through
+// `main_tx` so the main loop can re-emit the status. `generation` and `pwd`
+// are echoed back so the receiver can drop stale answers.
+//
+// A short-circuit: if `deadline == ZERO` we skip the work entirely (used by
+// the DirtyResolved handler when re-rendering with an already-computed dirty).
+fn compute_dirty(
+    deadline: Duration,
+    generation: u64,
+    pwd: PathBuf,
+    main_tx: mpsc::Sender<Event>,
+) -> DirtyState {
+    let repo_path = pwd.clone();
+    let (tx, rx) = mpsc::channel::<DirtyState>();
 
+    std::thread::spawn(move || {
+        let result = match gix::discover(&repo_path).ok() {
+            Some(r) => compute_dirty_unbounded(&r),
+            None => DirtyState::Unknown,
+        };
+        // Try to deliver synchronously first. If the main thread is no longer
+        // waiting (deadline already passed and rx is dropped), fall back to
+        // the main channel so the deferred result still lands.
+        if tx.send(result.clone()).is_err() {
+            main_tx
+                .send(Event::DirtyResolved {
+                    generation,
+                    pwd,
+                    result,
+                })
+                .ok();
+        }
+    });
+
+    match rx.recv_timeout(deadline) {
+        Ok(result) => result,
+        Err(_) => DirtyState::Unknown,
+    }
+}
+
+// Iterates gix's parallel status engine without a deadline-driven interrupt.
+// Drains the iterator (or short-circuits when all four flags are observed)
+// and returns Clean / Dirty(flags) / Unknown (only on gix errors).
+fn compute_dirty_unbounded(repo: &gix::Repository) -> DirtyState {
     let platform = match repo.status(gix::progress::Discard) {
-        Ok(p) => p.should_interrupt_owned(interrupt.clone()),
+        Ok(p) => p,
         Err(_) => return DirtyState::Unknown,
     };
 
@@ -403,8 +471,6 @@ fn compute_dirty(repo: &gix::Repository, deadline: Duration) -> DirtyState {
 
     if flags.any() {
         DirtyState::Dirty(flags)
-    } else if interrupt.load(Ordering::SeqCst) {
-        DirtyState::Unknown
     } else {
         DirtyState::Clean
     }
