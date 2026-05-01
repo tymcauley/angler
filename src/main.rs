@@ -1,11 +1,17 @@
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::time::Duration;
+
+const DEFAULT_DIRTY_DEADLINE: Duration = Duration::from_millis(200);
 
 fn main() {
     let mut fish_pid: Option<i32> = None;
     let mut status_file: Option<PathBuf> = None;
     let mut request_fifo: Option<PathBuf> = None;
+    let mut dirty_deadline = DEFAULT_DIRTY_DEADLINE;
 
     let args: Vec<String> = std::env::args().collect();
     let mut i = 1;
@@ -23,6 +29,12 @@ fn main() {
             }
             "--request-fifo" => {
                 request_fifo = args.get(i + 1).map(PathBuf::from);
+                i += 2;
+            }
+            "--dirty-deadline-ms" => {
+                if let Some(ms) = args.get(i + 1).and_then(|s| s.parse().ok()) {
+                    dirty_deadline = Duration::from_millis(ms);
+                }
                 i += 2;
             }
             other => {
@@ -55,7 +67,7 @@ fn main() {
         if path.as_os_str().is_empty() {
             continue;
         }
-        let status = compute_status(&path);
+        let status = compute_status(&path, dirty_deadline);
         if let Err(e) = write_status_file(&status_file, &path, status.as_ref()) {
             eprintln!("fish-prompt-daemon: write_status_file: {e}");
             continue;
@@ -82,10 +94,27 @@ struct Status {
     branch: String,
     ahead: u32,
     behind: u32,
-    dirty: bool,
+    dirty: DirtyState,
 }
 
-fn compute_status(path: &Path) -> Option<Status> {
+#[derive(Copy, Clone)]
+enum DirtyState {
+    Clean,
+    Dirty,
+    Unknown,
+}
+
+impl DirtyState {
+    fn as_byte(self) -> &'static str {
+        match self {
+            DirtyState::Clean => "0",
+            DirtyState::Dirty => "1",
+            DirtyState::Unknown => "?",
+        }
+    }
+}
+
+fn compute_status(path: &Path, dirty_deadline: Duration) -> Option<Status> {
     let repo = gix::discover(path).ok()?;
 
     let branch = match repo.head_name().ok().flatten() {
@@ -96,14 +125,54 @@ fn compute_status(path: &Path) -> Option<Status> {
         },
     };
 
-    let dirty = repo.is_dirty().unwrap_or(false);
-
     Some(Status {
         branch,
         ahead: 0,
         behind: 0,
-        dirty,
+        dirty: compute_dirty(&repo, dirty_deadline),
     })
+}
+
+// Iterates gix's parallel status engine until either:
+//   - an item is yielded (any change → Dirty, short-circuit)
+//   - the iterator drains naturally (Clean)
+//   - the deadline expires (Unknown — unless we already saw a change)
+//
+// The deadline is enforced via a timer thread that flips the AtomicBool
+// gix's workers periodically check.
+fn compute_dirty(repo: &gix::Repository, deadline: Duration) -> DirtyState {
+    let interrupt = Arc::new(AtomicBool::new(false));
+    {
+        let interrupt = interrupt.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(deadline);
+            interrupt.store(true, Ordering::SeqCst);
+        });
+    }
+
+    let platform = match repo.status(gix::progress::Discard) {
+        Ok(p) => p.should_interrupt_owned(interrupt.clone()),
+        Err(_) => return DirtyState::Unknown,
+    };
+
+    let iter = match platform.into_iter(None) {
+        Ok(it) => it,
+        Err(_) => return DirtyState::Unknown,
+    };
+
+    let mut found_change = false;
+    for item in iter {
+        if item.is_ok() {
+            found_change = true;
+            break;
+        }
+    }
+
+    match (found_change, interrupt.load(Ordering::SeqCst)) {
+        (true, _) => DirtyState::Dirty,
+        (false, true) => DirtyState::Unknown,
+        (false, false) => DirtyState::Clean,
+    }
 }
 
 fn write_status_file(
@@ -126,7 +195,7 @@ fn write_status_file(
                 s.branch,
                 s.ahead,
                 s.behind,
-                if s.dirty { 1 } else { 0 }
+                s.dirty.as_byte()
             )?;
         } else {
             f.write_all(b"\0\0\0\0")?;

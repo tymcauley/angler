@@ -27,9 +27,13 @@ function fish_prompt
                 echo -n " $branch"
                 test "$ahead" != 0; and test -n "$ahead"; and echo -n "↑$ahead"
                 test "$behind" != 0; and test -n "$behind"; and echo -n "↓$behind"
-                if test "$dirty" = 1
-                    set_color red
-                    echo -n ' *'
+                switch $dirty
+                    case 1
+                        set_color red
+                        echo -n ' *'
+                    case '?'
+                        set_color yellow
+                        echo -n ' ?'
                 end
                 set_color normal
             end
