@@ -103,6 +103,28 @@ impl Harness {
             std::thread::sleep(Duration::from_millis(10));
         }
     }
+
+    // Wait until predicate(fields) is true. Used for fsmonitor tests where
+    // the daemon spontaneously re-emits without a fresh FIFO request, so
+    // wait_for() (which keys on path) doesn't apply.
+    fn wait_until(
+        &self,
+        timeout: Duration,
+        mut predicate: impl FnMut(&Fields) -> bool,
+    ) -> Option<Fields> {
+        let deadline = Instant::now() + timeout;
+        loop {
+            if let Ok(fields) = read_status(&self.status_file) {
+                if predicate(&fields) {
+                    return Some(fields);
+                }
+            }
+            if Instant::now() >= deadline {
+                return None;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
 }
 
 impl Drop for Harness {
@@ -387,6 +409,28 @@ fn detached_head_reports_zero_ahead_behind() {
     let f = h.wait_for(repo.path());
     assert_eq!(f.ahead, "0");
     assert_eq!(f.behind, "0");
+}
+
+#[test]
+fn fsmonitor_picks_up_branch_change_without_new_request() {
+    let h = Harness::new();
+    let repo = make_clean_repo();
+
+    // Initial request — daemon also starts watching this repo.
+    h.request(repo.path());
+    let initial = h.wait_for(repo.path());
+    assert_eq!(initial.branch, "main");
+
+    // Switch branches in the worktree directly, without telling the daemon.
+    // This writes .git/HEAD and creates .git/refs/heads/feature, both in the
+    // daemon's watch set. We expect the daemon to re-emit on its own.
+    git(repo.path(), &["checkout", "-q", "-b", "feature"]);
+
+    let updated = h
+        .wait_until(Duration::from_secs(3), |f| f.branch == "feature")
+        .expect("daemon should have observed the branch change via fsmonitor");
+    assert_eq!(updated.path, repo.path());
+    assert_eq!(updated.branch, "feature");
 }
 
 #[test]

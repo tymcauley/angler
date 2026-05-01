@@ -11,6 +11,8 @@ path = "src/main.rs"
 [dependencies]
 gix = { version = "0.83", default-features = false, features = ["status", "revision", "max-performance-safe", "sha1"] }
 libc = "0.2"
+notify = "8"
+notify-debouncer-full = "0.6"
 
 [dev-dependencies]
 tempfile = "3"
