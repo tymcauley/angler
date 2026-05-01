@@ -28,11 +28,19 @@ build: ## Build the daemon in release mode
 install: install-fish ## Install daemon (~/.cargo/bin) and symlink fish files into FISH_CONFIG_DIR
 	cargo install --path .
 
-install-fish: ## Symlink conf.d/ and functions/ files into FISH_CONFIG_DIR
-	mkdir -p $(FISH_CONFIG_DIR)/conf.d $(FISH_CONFIG_DIR)/functions
-	ln -sf $(abspath conf.d/fish-prompt.fish) $(FISH_CONFIG_DIR)/conf.d/fish-prompt.fish
-	ln -sf $(abspath functions/fish_prompt.fish) $(FISH_CONFIG_DIR)/functions/fish_prompt.fish
+install-fish: ## Symlink every *.fish in conf.d/ and functions/ into FISH_CONFIG_DIR
+	@mkdir -p $(FISH_CONFIG_DIR)/conf.d $(FISH_CONFIG_DIR)/functions
+	@for f in conf.d/*.fish functions/*.fish; do \
+	    target="$(FISH_CONFIG_DIR)/$$f"; \
+	    ln -sf "$(CURDIR)/$$f" "$$target"; \
+	    echo "  $$f -> $$target"; \
+	done
 
-uninstall: ## Remove the symlinks (does not uninstall the binary; use `cargo uninstall fish-prompt`)
-	rm -f $(FISH_CONFIG_DIR)/conf.d/fish-prompt.fish
-	rm -f $(FISH_CONFIG_DIR)/functions/fish_prompt.fish
+uninstall: ## Remove our symlinks from FISH_CONFIG_DIR (binary stays under cargo's management)
+	@for f in conf.d/*.fish functions/*.fish; do \
+	    target="$(FISH_CONFIG_DIR)/$$f"; \
+	    if [ -L "$$target" ] && [ "$$(readlink "$$target")" = "$(CURDIR)/$$f" ]; then \
+	        rm -f "$$target"; \
+	        echo "  removed $$target"; \
+	    fi; \
+	done
