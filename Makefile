@@ -1,23 +1,27 @@
-.PHONY: check test test-rust test-fish fmt-check lint build install
+.DEFAULT_GOAL := help
+.PHONY: help check test test-rust test-fish fmt-check lint build install
 
-check: fmt-check lint test
+help: ## Show this help
+	@awk 'BEGIN {FS = ":.*?## "} /^[a-zA-Z_-]+:.*?## / {printf "  %-12s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
 
-test: test-rust test-fish
+check: fmt-check lint test ## Run fmt-check + lint + test (full pre-push verification)
 
-test-rust:
+test: test-rust test-fish ## Run all tests (Rust + fish)
+
+test-rust: ## Run cargo test
 	cargo test
 
-test-fish:
+test-fish: ## Run fish render tests
 	fish -N tests/fish_render.fish
 
-fmt-check:
+fmt-check: ## Verify rustfmt-clean (no rewrites)
 	cargo fmt --all --check
 
-lint:
+lint: ## Run clippy with warnings as errors
 	cargo clippy --all-targets -- -D warnings
 
-build:
+build: ## Build the daemon in release mode
 	cargo build --release
 
-install: build
+install: build ## Install the daemon to ~/.cargo/bin
 	cargo install --path .
