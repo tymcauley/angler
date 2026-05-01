@@ -47,14 +47,22 @@ impl Harness {
         let pid = std::process::id() as i32;
         let mut cmd = Command::new(DAEMON);
         cmd.args([
-            "--fish-pid", &pid.to_string(),
-            "--status-file", status_file.to_str().unwrap(),
-            "--request-fifo", request_fifo.to_str().unwrap(),
+            "--fish-pid",
+            &pid.to_string(),
+            "--status-file",
+            status_file.to_str().unwrap(),
+            "--request-fifo",
+            request_fifo.to_str().unwrap(),
         ]);
         cmd.args(extra);
         let daemon = cmd.spawn().expect("spawn daemon");
 
-        Self { _state: state, request_fifo, status_file, daemon }
+        Self {
+            _state: state,
+            request_fifo,
+            status_file,
+            daemon,
+        }
     }
 
     fn request(&self, path: &Path) {
@@ -135,7 +143,8 @@ fn read_status(p: &Path) -> std::io::Result<Fields> {
 
 fn git(repo: &Path, args: &[&str]) {
     let out = Command::new("git")
-        .arg("-C").arg(repo)
+        .arg("-C")
+        .arg(repo)
         .args(args)
         // Empty config so user's commit hooks/templates can't bleed in.
         .env("GIT_CONFIG_GLOBAL", "/dev/null")
@@ -171,13 +180,17 @@ fn make_dirty_repo() -> TempDir {
 fn make_detached_head_repo() -> TempDir {
     let dir = make_clean_repo();
     let out = Command::new("git")
-        .arg("-C").arg(dir.path())
+        .arg("-C")
+        .arg(dir.path())
         .args(["rev-parse", "HEAD"])
         .output()
         .unwrap();
     let sha = String::from_utf8(out.stdout).unwrap();
     let sha = sha.trim();
-    git(dir.path(), &["-c", "advice.detachedHead=false", "checkout", sha]);
+    git(
+        dir.path(),
+        &["-c", "advice.detachedHead=false", "checkout", sha],
+    );
     dir
 }
 
@@ -237,7 +250,12 @@ fn detached_head_reports_short_sha() {
     h.request(repo.path());
     let f = h.wait_for(repo.path());
     // Expect a 7-char hex SHA, not "main".
-    assert_eq!(f.branch.len(), 7, "expected 7-char short sha, got {:?}", f.branch);
+    assert_eq!(
+        f.branch.len(),
+        7,
+        "expected 7-char short sha, got {:?}",
+        f.branch
+    );
     assert!(
         f.branch.chars().all(|c| c.is_ascii_hexdigit()),
         "expected hex sha, got {:?}",

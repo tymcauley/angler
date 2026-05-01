@@ -1,4 +1,6 @@
-.PHONY: test test-rust test-fish build install
+.PHONY: check test test-rust test-fish fmt-check lint build install
+
+check: fmt-check lint test
 
 test: test-rust test-fish
 
@@ -7,6 +9,12 @@ test-rust:
 
 test-fish:
 	fish -N tests/fish_render.fish
+
+fmt-check:
+	cargo fmt --all --check
+
+lint:
+	cargo clippy --all-targets -- -D warnings
 
 build:
 	cargo build --release

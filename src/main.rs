@@ -18,9 +18,7 @@ fn main() {
     while i < args.len() {
         match args[i].as_str() {
             "--fish-pid" => {
-                fish_pid = args
-                    .get(i + 1)
-                    .and_then(|s| s.parse().ok());
+                fish_pid = args.get(i + 1).and_then(|s| s.parse().ok());
                 i += 2;
             }
             "--status-file" => {
