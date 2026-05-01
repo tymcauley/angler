@@ -13,7 +13,7 @@ function fish_prompt
 
     if set -q _fp_status_file; and test -r $_fp_status_file
         set -l fields (cat $_fp_status_file | string split0)
-        if test (count $fields) -ge 7
+        if test (count $fields) -ge 8
             set -l reported_path $fields[1]
             set -l branch $fields[2]
             set -l ahead $fields[3]
@@ -21,6 +21,7 @@ function fish_prompt
             set -l dirty $fields[5]
             set -l operation $fields[6]
             set -l upstream $fields[7]
+            set -l stash $fields[8]
 
             # Render only when the response matches the current PWD; otherwise
             # the daemon hasn't caught up yet and any data we have is stale.
@@ -45,6 +46,10 @@ function fish_prompt
                     case '?'
                         set_color yellow
                         echo -n ' ?'
+                end
+                if test "$stash" != 0; and test -n "$stash"
+                    set_color blue
+                    echo -n " ≡$stash"
                 end
                 set_color normal
             end

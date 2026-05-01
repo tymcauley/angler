@@ -203,6 +203,7 @@ struct Status {
     upstream: UpstreamState,
     dirty: DirtyState,
     operation: Option<&'static str>,
+    stash: u32,
 }
 
 enum UpstreamState {
@@ -252,7 +253,18 @@ fn compute_status_for_repo(repo: &gix::Repository, dirty_deadline: Duration) -> 
         upstream,
         dirty: compute_dirty(repo, dirty_deadline),
         operation: detect_operation(repo.git_dir()),
+        stash: count_stashes(repo.git_dir()),
     })
+}
+
+// Counts entries in the stash reflog. Each `git stash push` appends one line;
+// `stash pop`/`drop` rewrites the file with one fewer line. Absent file means
+// zero stashes (the normal case for repos that have never been stashed).
+fn count_stashes(git_dir: &Path) -> u32 {
+    match std::fs::read_to_string(git_dir.join("logs/refs/stash")) {
+        Ok(content) => content.lines().count() as u32,
+        Err(_) => 0,
+    }
 }
 
 // Returns a short label for any in-progress git operation. Order: rebase wins
@@ -367,9 +379,9 @@ fn write_status_file(
     let tmp = path.with_extension("tmp");
     {
         let mut f = std::fs::File::create(&tmp)?;
-        // Each field NUL-terminated. 7 fields:
-        //   request_path, branch, ahead, behind, dirty, operation, upstream
-        // For non-repos, the last 6 fields are empty. ahead/behind are "0"
+        // Each field NUL-terminated. 8 fields:
+        //   request_path, branch, ahead, behind, dirty, operation, upstream, stash
+        // For non-repos, the last 7 fields are empty. ahead/behind are "0"
         // when no upstream or upstream is gone; the upstream field carries
         // the qualitative signal.
         f.write_all(request_path.as_os_str().as_bytes())?;
@@ -382,16 +394,17 @@ fn write_status_file(
             };
             write!(
                 f,
-                "{}\0{}\0{}\0{}\0{}\0{}\0",
+                "{}\0{}\0{}\0{}\0{}\0{}\0{}\0",
                 s.branch,
                 ahead,
                 behind,
                 s.dirty.as_byte(),
                 s.operation.unwrap_or(""),
                 upstream_label,
+                s.stash,
             )?;
         } else {
-            f.write_all(b"\0\0\0\0\0\0")?;
+            f.write_all(b"\0\0\0\0\0\0\0")?;
         }
     }
     std::fs::rename(&tmp, path)?;
