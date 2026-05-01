@@ -203,6 +203,7 @@ struct Status {
     ahead: u32,
     behind: u32,
     dirty: DirtyState,
+    operation: Option<&'static str>,
 }
 
 #[derive(Copy, Clone)]
@@ -242,7 +243,29 @@ fn compute_status_for_repo(repo: &gix::Repository, dirty_deadline: Duration) -> 
         ahead,
         behind,
         dirty: compute_dirty(repo, dirty_deadline),
+        operation: detect_operation(repo.git_dir()),
     })
+}
+
+// Returns a short label for any in-progress git operation. Order: rebase wins
+// over merge because during a rebase conflict-resolution stop, both
+// rebase-merge/ and MERGE_HEAD can exist, and the user thinks of themselves
+// as rebasing.
+fn detect_operation(git_dir: &Path) -> Option<&'static str> {
+    let exists = |sub: &str| git_dir.join(sub).exists();
+    if exists("rebase-merge") || exists("rebase-apply") {
+        Some("rebasing")
+    } else if exists("CHERRY_PICK_HEAD") {
+        Some("cherry-picking")
+    } else if exists("REVERT_HEAD") {
+        Some("reverting")
+    } else if exists("MERGE_HEAD") {
+        Some("merging")
+    } else if exists("BISECT_LOG") {
+        Some("bisecting")
+    } else {
+        None
+    }
 }
 
 // Returns (ahead, behind) for `head_name` against its configured upstream
@@ -325,22 +348,24 @@ fn write_status_file(
     let tmp = path.with_extension("tmp");
     {
         let mut f = std::fs::File::create(&tmp)?;
-        // Each field NUL-terminated. 5 fields:
-        //   request_path, branch, ahead, behind, dirty
-        // For non-repos, the last 4 fields are empty.
+        // Each field NUL-terminated. 6 fields:
+        //   request_path, branch, ahead, behind, dirty, operation
+        // For non-repos, the last 5 fields are empty. Operation is empty when
+        // no operation is in progress.
         f.write_all(request_path.as_os_str().as_bytes())?;
         f.write_all(b"\0")?;
         if let Some(s) = status {
             write!(
                 f,
-                "{}\0{}\0{}\0{}\0",
+                "{}\0{}\0{}\0{}\0{}\0",
                 s.branch,
                 s.ahead,
                 s.behind,
-                s.dirty.as_byte()
+                s.dirty.as_byte(),
+                s.operation.unwrap_or(""),
             )?;
         } else {
-            f.write_all(b"\0\0\0\0")?;
+            f.write_all(b"\0\0\0\0\0")?;
         }
     }
     std::fs::rename(&tmp, path)?;

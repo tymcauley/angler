@@ -141,15 +141,15 @@ struct Fields {
     ahead: String,
     behind: String,
     dirty: String,
+    operation: String,
 }
 
 fn read_status(p: &Path) -> std::io::Result<Fields> {
     let mut buf = Vec::new();
     File::open(p)?.read_to_end(&mut buf)?;
     let parts: Vec<&[u8]> = buf.split(|&b| b == 0).collect();
-    // Five fields followed by an empty trailing element from the final NUL.
-    if parts.len() < 5 {
-        return Err(std::io::Error::other("fewer than 5 fields"));
+    if parts.len() < 6 {
+        return Err(std::io::Error::other("fewer than 6 fields"));
     }
     let s = |b: &[u8]| std::str::from_utf8(b).unwrap_or("").to_owned();
     Ok(Fields {
@@ -158,6 +158,7 @@ fn read_status(p: &Path) -> std::io::Result<Fields> {
         ahead: s(parts[2]),
         behind: s(parts[3]),
         dirty: s(parts[4]),
+        operation: s(parts[5]),
     })
 }
 
@@ -409,6 +410,60 @@ fn detached_head_reports_zero_ahead_behind() {
     let f = h.wait_for(repo.path());
     assert_eq!(f.ahead, "0");
     assert_eq!(f.behind, "0");
+}
+
+#[test]
+fn detects_in_progress_operations() {
+    // Each entry: (file or dir to create under .git, expected operation label).
+    // We test by hand-creating the marker since simulating a real conflicted
+    // rebase/merge requires more fixture machinery than the marker check.
+    let cases: &[(&str, &str)] = &[
+        ("MERGE_HEAD", "merging"),
+        ("CHERRY_PICK_HEAD", "cherry-picking"),
+        ("REVERT_HEAD", "reverting"),
+        ("BISECT_LOG", "bisecting"),
+    ];
+
+    for (marker, label) in cases {
+        let h = Harness::new();
+        let repo = make_clean_repo();
+        std::fs::write(repo.path().join(".git").join(marker), b"placeholder").unwrap();
+        h.request(repo.path());
+        let f = h.wait_for(repo.path());
+        assert_eq!(f.operation, *label, "marker {marker}");
+    }
+}
+
+#[test]
+fn rebase_directory_reports_rebasing() {
+    let h = Harness::new();
+    let repo = make_clean_repo();
+    std::fs::create_dir(repo.path().join(".git").join("rebase-merge")).unwrap();
+    h.request(repo.path());
+    let f = h.wait_for(repo.path());
+    assert_eq!(f.operation, "rebasing");
+}
+
+#[test]
+fn rebase_wins_over_merge_when_both_present() {
+    let h = Harness::new();
+    let repo = make_clean_repo();
+    std::fs::create_dir(repo.path().join(".git").join("rebase-merge")).unwrap();
+    std::fs::write(repo.path().join(".git").join("MERGE_HEAD"), b"x").unwrap();
+    h.request(repo.path());
+    let f = h.wait_for(repo.path());
+    // During a rebase that hits a conflict, both markers can exist; user
+    // thinks of themselves as rebasing, not merging.
+    assert_eq!(f.operation, "rebasing");
+}
+
+#[test]
+fn no_operation_when_idle() {
+    let h = Harness::new();
+    let repo = make_clean_repo();
+    h.request(repo.path());
+    let f = h.wait_for(repo.path());
+    assert_eq!(f.operation, "");
 }
 
 #[test]
