@@ -7,14 +7,15 @@ Branch info appears the moment you hit Enter; dirty / ahead / behind fill in sho
 ## Output
 
 ```
-~/code/myproject main↑2 *                                          1.4s 14:23:01
+host:~/code/myproject main↑2 * 1.4s                          myproject direnv 14:23:01
 ❯
 ```
 
-Two-line layout: path + git on line 1 (left), command duration + time on line 1 (right, padded to the terminal edge), prompt symbol on line 2.
+Two-line layout: path + git + command duration on line 1 (left), environmental indicators + time on line 1 (right, padded to the terminal edge), prompt symbol on line 2.
 
 Line 1 left:
 
+- **red bold** `host:` prefix when SSH'd in (short hostname, signaling that the path that follows is on a remote machine)
 - **cyan** abbreviated working directory (and `[N]` in red after it if the last command exited non-zero)
 - **yellow** branch name (or 7-char SHA if detached)
 - `↑N` commits ahead of upstream, `↓N` behind
@@ -23,11 +24,16 @@ Line 1 left:
 - **yellow** `?` if the dirty check couldn't finish within the deadline (default 200ms — you'll see it on huge repos with a cold disk cache; resolves on its own once the background scan finishes)
 - **blue** `≡N` for stash count (hidden if zero)
 - **magenta** `(rebasing)` / `(merging)` / etc. when an operation is in progress
+- **yellow** command duration (only for commands over `_fp_cmd_duration_threshold_ms`, default 1s — Hydro-style: always shown when applicable, regardless of terminal width)
 
 Line 1 right (only when there's room):
 
-- **yellow** command duration (only for commands over `_fp_cmd_duration_threshold_ms`, default 1s)
+- **blue** Python venv name when `$VIRTUAL_ENV` is set (basename of the venv path; if that's `.venv` or `venv`, walks up to use the parent directory name)
+- **green** `direnv` indicator when `$DIRENV_DIR` is set
 - **gray** time `HH:MM:SS`
+
+When the terminal is narrow, indicators on the right drop in priority order to keep things on one line: venv → direnv → time (venv goes first).
+The right side disappears entirely when even time can't fit alongside the left.
 
 Line 2: vi-mode-aware prompt symbol (default `❯`, opt in via `_fp_show_vi_mode = 1`).
 
@@ -98,8 +104,19 @@ set -g _fp_show_operation    1
 set -g _fp_show_exit_code    1
 set -g _fp_show_time         1
 set -g _fp_show_cmd_duration 1
+set -g _fp_show_ssh          1
+set -g _fp_show_venv         1
+set -g _fp_show_direnv       1
 set -g _fp_show_vi_mode      0   # opt-in; only meaningful with vi keybindings
 set -g _fp_cmd_duration_threshold_ms 1000   # only show duration past this
+```
+
+Environmental-indicator colors:
+
+```fish
+set -g _fp_color_ssh    red --bold
+set -g _fp_color_venv   blue
+set -g _fp_color_direnv green
 ```
 
 Vi-mode prompt symbols (line 2, when `_fp_show_vi_mode = 1`):

@@ -37,6 +37,9 @@ set -q _fp_color_stash;     or set -g _fp_color_stash     blue
 set -q _fp_color_exit_code; or set -g _fp_color_exit_code red
 set -q _fp_color_time;      or set -g _fp_color_time      brblack
 set -q _fp_color_duration;  or set -g _fp_color_duration  yellow
+set -q _fp_color_ssh;       or set -g _fp_color_ssh       red --bold
+set -q _fp_color_venv;      or set -g _fp_color_venv      blue
+set -q _fp_color_direnv;    or set -g _fp_color_direnv    green
 set -q _fp_color_vi_default; or set -g _fp_color_vi_default green
 set -q _fp_color_vi_visual;  or set -g _fp_color_vi_visual  magenta
 set -q _fp_color_vi_replace; or set -g _fp_color_vi_replace red
@@ -49,6 +52,9 @@ set -q _fp_show_exit_code;          or set -g _fp_show_exit_code          1
 set -q _fp_show_time;               or set -g _fp_show_time               1
 set -q _fp_show_cmd_duration;       or set -g _fp_show_cmd_duration       1
 set -q _fp_show_vi_mode;            or set -g _fp_show_vi_mode            0
+set -q _fp_show_ssh;                or set -g _fp_show_ssh                1
+set -q _fp_show_venv;               or set -g _fp_show_venv               1
+set -q _fp_show_direnv;             or set -g _fp_show_direnv             1
 set -q _fp_cmd_duration_threshold_ms; or set -g _fp_cmd_duration_threshold_ms 1000
 
 # Daemon tuning.
