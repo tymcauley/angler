@@ -14,6 +14,12 @@ set -q _fp_symbol_gone;      or set -g _fp_symbol_gone      '↯'
 set -q _fp_symbol_stash;     or set -g _fp_symbol_stash     '≡'
 set -q _fp_symbol_prompt;    or set -g _fp_symbol_prompt    '❯'
 
+# Vi-mode-aware prompt symbol (line 2). Used when $fish_bind_mode != insert
+# and _fp_show_vi_mode = 1. Insert mode falls through to _fp_symbol_prompt.
+set -q _fp_symbol_vi_default; or set -g _fp_symbol_vi_default '❮'
+set -q _fp_symbol_vi_visual;  or set -g _fp_symbol_vi_visual  'V'
+set -q _fp_symbol_vi_replace; or set -g _fp_symbol_vi_replace 'R'
+
 # Colors. Stored as lists so multi-arg styles like `red --bold` work directly
 # when expanded into `set_color`.
 set -q _fp_color_path;      or set -g _fp_color_path      cyan
@@ -29,12 +35,21 @@ set -q _fp_color_behind;    or set -g _fp_color_behind    yellow
 set -q _fp_color_gone;      or set -g _fp_color_gone      red
 set -q _fp_color_stash;     or set -g _fp_color_stash     blue
 set -q _fp_color_exit_code; or set -g _fp_color_exit_code red
+set -q _fp_color_time;      or set -g _fp_color_time      brblack
+set -q _fp_color_duration;  or set -g _fp_color_duration  yellow
+set -q _fp_color_vi_default; or set -g _fp_color_vi_default green
+set -q _fp_color_vi_visual;  or set -g _fp_color_vi_visual  magenta
+set -q _fp_color_vi_replace; or set -g _fp_color_vi_replace red
 
 # Toggles (1 = show, anything else = hide).
-set -q _fp_show_ahead_behind; or set -g _fp_show_ahead_behind 1
-set -q _fp_show_stash;        or set -g _fp_show_stash        1
-set -q _fp_show_operation;    or set -g _fp_show_operation    1
-set -q _fp_show_exit_code;    or set -g _fp_show_exit_code    1
+set -q _fp_show_ahead_behind;       or set -g _fp_show_ahead_behind       1
+set -q _fp_show_stash;              or set -g _fp_show_stash              1
+set -q _fp_show_operation;          or set -g _fp_show_operation          1
+set -q _fp_show_exit_code;          or set -g _fp_show_exit_code          1
+set -q _fp_show_time;               or set -g _fp_show_time               1
+set -q _fp_show_cmd_duration;       or set -g _fp_show_cmd_duration       1
+set -q _fp_show_vi_mode;            or set -g _fp_show_vi_mode            0
+set -q _fp_cmd_duration_threshold_ms; or set -g _fp_cmd_duration_threshold_ms 1000
 
 # Daemon tuning.
 set -q _fp_dirty_deadline_ms; or set -g _fp_dirty_deadline_ms 200

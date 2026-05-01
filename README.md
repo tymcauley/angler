@@ -7,15 +7,29 @@ Branch info appears the moment you hit Enter; dirty / ahead / behind fill in sho
 ## Output
 
 ```
-~/code/myproject main↑2 *
+~/code/myproject main↑2 *                                          1.4s 14:23:01
 ❯
 ```
+
+Two-line layout: path + git on line 1 (left), command duration + time on line 1 (right, padded to the terminal edge), prompt symbol on line 2.
+
+Line 1 left:
 
 - **cyan** abbreviated working directory (and `[N]` in red after it if the last command exited non-zero)
 - **yellow** branch name (or 7-char SHA if detached)
 - `↑N` commits ahead of upstream, `↓N` behind
-- **red** `*` if the working tree is dirty
-- **yellow** `?` if the dirty check couldn't finish within the deadline (default 200ms — you'll see it on huge repos with a cold disk cache)
+- **red** `↯` if the upstream tracking branch is gone (typically a deleted remote branch you can prune)
+- Dirty markers: red `*` modified, green `+` staged, yellow `?` untracked, red bold `!` conflict
+- **yellow** `?` if the dirty check couldn't finish within the deadline (default 200ms — you'll see it on huge repos with a cold disk cache; resolves on its own once the background scan finishes)
+- **blue** `≡N` for stash count (hidden if zero)
+- **magenta** `(rebasing)` / `(merging)` / etc. when an operation is in progress
+
+Line 1 right (only when there's room):
+
+- **yellow** command duration (only for commands over `_fp_cmd_duration_threshold_ms`, default 1s)
+- **gray** time `HH:MM:SS`
+
+Line 2: vi-mode-aware prompt symbol (default `❯`, opt in via `_fp_show_vi_mode = 1`).
 
 ## Requirements
 
@@ -82,6 +96,19 @@ set -g _fp_show_ahead_behind 1
 set -g _fp_show_stash        1
 set -g _fp_show_operation    1
 set -g _fp_show_exit_code    1
+set -g _fp_show_time         1
+set -g _fp_show_cmd_duration 1
+set -g _fp_show_vi_mode      0   # opt-in; only meaningful with vi keybindings
+set -g _fp_cmd_duration_threshold_ms 1000   # only show duration past this
+```
+
+Vi-mode prompt symbols (line 2, when `_fp_show_vi_mode = 1`):
+
+```fish
+set -g _fp_symbol_vi_default '❮'   # vim normal mode
+set -g _fp_symbol_vi_visual  'V'   # visual mode
+set -g _fp_symbol_vi_replace 'R'   # replace mode
+# insert mode falls through to _fp_symbol_prompt
 ```
 
 Daemon tuning:

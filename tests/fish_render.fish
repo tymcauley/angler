@@ -10,6 +10,13 @@ set -ga fish_function_path $repo_root/functions
 # in scripted mode.
 source $repo_root/conf.d/fish-prompt.fish
 
+# Disable time and command-duration rendering in tests: their output is
+# timing-dependent and the digits would collide with substring assertions
+# against numeric counts (ahead/behind/stash). Vi mode is also off by default,
+# so the prompt-symbol cases match.
+set -g _fp_show_time 0
+set -g _fp_show_cmd_duration 0
+
 # Per-test scratch state
 set -g _fp_status_file (command mktemp)
 function _cleanup --on-event fish_exit
@@ -212,6 +219,60 @@ write_status /tmp main 0 0 0 '' '' 0
 set -l out (fish_prompt | string collect)
 assert_contains "$out" '%' "custom prompt symbol overrides default"
 set -g _fp_symbol_prompt '❯'
+
+# ----- multi-line layout -----
+
+# Prompt symbol appears on a second line.
+write_status /tmp main 0 0 0 '' '' 0
+set -l out (fish_prompt | string collect)
+if string match -q '*'\n'*' -- "$out"
+    ok "prompt is multi-line"
+else
+    fail "prompt is multi-line"
+    echo "       expected output to contain a newline"
+    echo "       actual: $out"
+end
+assert_contains "$out" "❯" "prompt symbol on the second line"
+
+# Time renders on the right when enabled.
+set -g _fp_show_time 1
+set -g COLUMNS 80
+write_status /tmp main 0 0 0 '' '' 0
+set -l out (fish_prompt | string collect)
+if string match -qr '^[0-9]{2}:[0-9]{2}:[0-9]{2}$' (date '+%H:%M:%S')
+    # Just check that an HH:MM:SS-shaped substring appears.
+    if string match -qr '[0-9]{2}:[0-9]{2}:[0-9]{2}' -- "$out"
+        ok "time renders on the right"
+    else
+        fail "time renders on the right"
+        echo "       expected HH:MM:SS substring; actual: $out"
+    end
+end
+set -g _fp_show_time 0
+
+# Command duration renders when over the threshold.
+set -g _fp_show_cmd_duration 1
+set -g _fp_cmd_duration_threshold_ms 1000
+set -g CMD_DURATION 2500
+write_status /tmp main 0 0 0 '' '' 0
+set -l out (fish_prompt | string collect)
+assert_contains "$out" "2.5s" "duration renders when over threshold"
+set -g CMD_DURATION 500
+set -l out (fish_prompt | string collect)
+assert_not_contains "$out" "0.5s" "duration hidden when under threshold"
+set -g _fp_show_cmd_duration 0
+set -g CMD_DURATION 0
+
+# Vi mode: 'default' (vim normal) uses the vi-default symbol when enabled.
+set -g _fp_show_vi_mode 1
+set -g fish_bind_mode default
+set -g _fp_symbol_vi_default 'NORMAL'
+write_status /tmp main 0 0 0 '' '' 0
+set -l out (fish_prompt | string collect)
+assert_contains "$out" "NORMAL" "vi default mode shows custom symbol"
+set -g _fp_symbol_vi_default '❮'
+set -g _fp_show_vi_mode 0
+set -g fish_bind_mode insert
 
 # Empty status file: must not crash and must produce a prompt.
 command truncate -s 0 $_fp_status_file
