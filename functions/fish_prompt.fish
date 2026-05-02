@@ -2,6 +2,16 @@ function fish_prompt
     set -l last_status $status
     set -l cmd_duration $CMD_DURATION
 
+    # fish renders fish_mode_prompt to the left of fish_prompt's first line;
+    # its width has to come out of our padding budget, otherwise an indicator
+    # like `[I] ` pushes line 1 past $COLUMNS and fish truncates from the
+    # left (prepending `…`).
+    set -l mode_str (fish_mode_prompt | string collect)
+    set -l mode_w 0
+    if test -n "$mode_str"
+        set mode_w (string length --visible -- "$mode_str")
+    end
+
     # Build line 1 from left and right halves. Left always renders fully;
     # right side has its own priority-drop logic (in _fp_render_right) so
     # that low-priority indicators yield to higher-priority ones when the
@@ -9,10 +19,11 @@ function fish_prompt
     set -l left (_fp_render_left $last_status $cmd_duration | string collect)
     set -l left_w (string length --visible -- "$left")
 
-    set -l right (_fp_render_right $left_w | string collect)
+    set -l effective_left_w (math "$left_w + $mode_w")
+    set -l right (_fp_render_right $effective_left_w | string collect)
     set -l right_w (string length --visible -- "$right")
 
-    set -l pad (math "$COLUMNS - $left_w - $right_w")
+    set -l pad (math "$COLUMNS - $effective_left_w - $right_w")
     if test -n "$right"; and test $pad -ge 1
         printf '%s%*s%s\n' "$left" $pad "" "$right"
     else
@@ -175,25 +186,6 @@ function _fp_render_right --argument-names left_w
 end
 
 function _fp_render_prompt_symbol
-    if test "$_fp_show_vi_mode" = 1
-        switch $fish_bind_mode
-            case default
-                set_color $_fp_color_vi_default
-                printf '%s ' $_fp_symbol_vi_default
-                set_color normal
-                return
-            case visual
-                set_color $_fp_color_vi_visual
-                printf '%s ' $_fp_symbol_vi_visual
-                set_color normal
-                return
-            case replace replace_one
-                set_color $_fp_color_vi_replace
-                printf '%s ' $_fp_symbol_vi_replace
-                set_color normal
-                return
-        end
-    end
     set_color $_fp_color_prompt
     printf '%s ' $_fp_symbol_prompt
     set_color normal

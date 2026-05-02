@@ -14,11 +14,13 @@ set -q _fp_symbol_gone;      or set -g _fp_symbol_gone      '↯'
 set -q _fp_symbol_stash;     or set -g _fp_symbol_stash     '≡'
 set -q _fp_symbol_prompt;    or set -g _fp_symbol_prompt    '❯'
 
-# Vi-mode-aware prompt symbol (line 2). Used when $fish_bind_mode != insert
-# and _fp_show_vi_mode = 1. Insert mode falls through to _fp_symbol_prompt.
-set -q _fp_symbol_vi_default; or set -g _fp_symbol_vi_default '❮'
-set -q _fp_symbol_vi_visual;  or set -g _fp_symbol_vi_visual  'V'
-set -q _fp_symbol_vi_replace; or set -g _fp_symbol_vi_replace 'R'
+# Vi mode indicator strings. Rendered by fish_mode_prompt (left of line 1)
+# when $fish_key_bindings = fish_vi_key_bindings. The line-2 prompt symbol
+# stays mode-agnostic.
+set -q _fp_symbol_vi_default; or set -g _fp_symbol_vi_default '[N]'
+set -q _fp_symbol_vi_insert;  or set -g _fp_symbol_vi_insert  '[I]'
+set -q _fp_symbol_vi_visual;  or set -g _fp_symbol_vi_visual  '[V]'
+set -q _fp_symbol_vi_replace; or set -g _fp_symbol_vi_replace '[R]'
 
 # Colors. Stored as lists so multi-arg styles like `red --bold` work directly
 # when expanded into `set_color`.
@@ -48,9 +50,10 @@ set -q _fp_color_ssh;       or set -g _fp_color_ssh       red --bold
 set -q _fp_color_venv;      or set -g _fp_color_venv      blue --bold
 set -q _fp_color_direnv;    or set -g _fp_color_direnv    green --bold
 set -q _fp_color_prompt;    or set -g _fp_color_prompt    green --bold
-set -q _fp_color_vi_default; or set -g _fp_color_vi_default green --bold
+set -q _fp_color_vi_default; or set -g _fp_color_vi_default red --bold
+set -q _fp_color_vi_insert;  or set -g _fp_color_vi_insert  green --bold
 set -q _fp_color_vi_visual;  or set -g _fp_color_vi_visual  magenta --bold
-set -q _fp_color_vi_replace; or set -g _fp_color_vi_replace red --bold
+set -q _fp_color_vi_replace; or set -g _fp_color_vi_replace yellow --bold
 
 # Toggles (1 = show, anything else = hide).
 set -q _fp_show_ahead_behind;       or set -g _fp_show_ahead_behind       1
@@ -59,7 +62,7 @@ set -q _fp_show_operation;          or set -g _fp_show_operation          1
 set -q _fp_show_exit_code;          or set -g _fp_show_exit_code          1
 set -q _fp_show_time;               or set -g _fp_show_time               1
 set -q _fp_show_cmd_duration;       or set -g _fp_show_cmd_duration       1
-set -q _fp_show_vi_mode;            or set -g _fp_show_vi_mode            0
+set -q _fp_show_vi_mode;            or set -g _fp_show_vi_mode            1
 set -q _fp_show_ssh;                or set -g _fp_show_ssh                1
 set -q _fp_show_venv;               or set -g _fp_show_venv               1
 set -q _fp_show_direnv;             or set -g _fp_show_direnv             1

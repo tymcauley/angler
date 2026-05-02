@@ -357,15 +357,38 @@ assert_not_contains "$out" "0.5s" "duration hidden when under threshold"
 set -g _fp_show_cmd_duration 0
 set -g CMD_DURATION 0
 
-# Vi mode: 'default' (vim normal) uses the vi-default symbol when enabled.
+# Vi mode indicator now lives in fish_mode_prompt (left of line 1), not the
+# line-2 prompt symbol. fish_mode_prompt only renders when vi keybindings
+# are active, so the test stages that.
 set -g _fp_show_vi_mode 1
+set -gx fish_key_bindings fish_vi_key_bindings
 set -g fish_bind_mode default
 set -g _fp_symbol_vi_default 'NORMAL'
-write_status /tmp main 0 0 0 '' '' 0
-set -l out (fish_prompt | string collect)
-assert_contains "$out" "NORMAL" "vi default mode shows custom symbol"
-set -g _fp_symbol_vi_default '❮'
+set -l out (fish_mode_prompt | string collect)
+assert_contains "$out" "NORMAL" "fish_mode_prompt renders default-mode symbol"
+
+set -g fish_bind_mode insert
+set -g _fp_symbol_vi_insert 'INSERT'
+set -l out (fish_mode_prompt | string collect)
+assert_contains "$out" "INSERT" "fish_mode_prompt renders insert-mode symbol"
+
+# Auto-skip when emacs keybindings are active.
+set -gx fish_key_bindings fish_default_key_bindings
+set -l out (fish_mode_prompt | string collect)
+assert_not_contains "$out" "INSERT" "fish_mode_prompt empty under non-vi keybindings"
+assert_not_contains "$out" "NORMAL" "no normal-mode label under non-vi keybindings"
+
+# Manual disable.
+set -gx fish_key_bindings fish_vi_key_bindings
 set -g _fp_show_vi_mode 0
+set -l out (fish_mode_prompt | string collect)
+assert_not_contains "$out" "INSERT" "fish_mode_prompt empty when _fp_show_vi_mode=0"
+
+# Reset for following tests.
+set -g _fp_symbol_vi_default '[N]'
+set -g _fp_symbol_vi_insert  '[I]'
+set -g _fp_show_vi_mode 1
+set -gx fish_key_bindings fish_default_key_bindings
 set -g fish_bind_mode insert
 
 # Empty status file: must not crash and must produce a prompt.
