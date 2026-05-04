@@ -6,8 +6,7 @@ function fish_prompt
     # responds asynchronously and SIGUSR1's a repaint when the result
     # actually changes — see the idempotency guard in the daemon. This
     # keeps the prompt correct after external worktree changes (editor
-    # saves, scripts in another window, etc.) that don't touch `.git/`,
-    # the same shape as Hydro's per-render git query.
+    # saves, scripts in another window, etc.) that don't touch `.git/`.
     _fp_request_status
 
     # fish renders fish_mode_prompt to the left of fish_prompt's first line;
@@ -66,10 +65,6 @@ function _fp_render_left --argument-names last_status cmd_duration
         set buf $buf (set_color $_fp_color_path_tail) $tail (set_color normal)
     end
 
-    if test "$last_status" -ne 0; and test "$_fp_show_exit_code" = 1
-        set buf $buf (set_color $_fp_color_exit_code) " [$last_status]" (set_color normal)
-    end
-
     if set -q _fp_status_file; and test -r $_fp_status_file
         set -l fields (cat $_fp_status_file | string split0)
         if test (count $fields) -ge 8
@@ -122,8 +117,8 @@ function _fp_render_left --argument-names last_status cmd_duration
         end
     end
 
-    # Command duration on the left, after git — Hydro-style. Always shown
-    # when over threshold, regardless of how narrow the terminal is.
+    # Command duration on the left, after git. Always shown when over
+    # threshold, regardless of how narrow the terminal is.
     if test "$_fp_show_cmd_duration" = 1; and test -n "$cmd_duration"; \
         and test "$cmd_duration" -ge "$_fp_cmd_duration_threshold_ms"
         set -l dur (_fp_format_duration $cmd_duration)
@@ -132,13 +127,18 @@ function _fp_render_left --argument-names last_status cmd_duration
         end
     end
 
+    # Exit code, after duration. ` | N` where the pipe and the code share
+    # `_fp_color_exit_code` so they read as one unit.
+    if test "$last_status" -ne 0; and test "$_fp_show_exit_code" = 1
+        set buf $buf (set_color $_fp_color_exit_code) " | $last_status" (set_color normal)
+    end
+
     string join '' -- $buf
 end
 
 # Builds the right-side content (venv, direnv, time) and drops segments in
 # priority order if the combined width doesn't fit alongside the left.
-# Drop order: venv → direnv → time. The argument is the visible width of
-# the left half.
+# Drop order matches the order they're added below (leftmost first).
 function _fp_render_right --argument-names left_w
     set -l segs
     set -l prios

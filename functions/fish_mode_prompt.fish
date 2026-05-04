@@ -1,7 +1,7 @@
 function fish_mode_prompt
     # fish renders this to the left of fish_prompt's first line. We use it
     # for the vi-mode indicator: a colored '[I]'/'[N]'/'[V]'/'[R]' block
-    # (or a Hydro-style reverse-video block, with the default colors).
+    # (or a reverse-video block, with the default colors).
     # Auto-detects vi keybindings, so leaving _fp_show_vi_mode at the
     # default of 1 is harmless for users on emacs bindings.
     #

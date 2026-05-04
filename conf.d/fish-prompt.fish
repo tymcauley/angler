@@ -16,11 +16,11 @@ set -q _fp_symbol_prompt;    or set -g _fp_symbol_prompt    '❯'
 
 # Vi mode indicator strings. Rendered by fish_mode_prompt (left of line 1)
 # when $fish_key_bindings = fish_vi_key_bindings. The line-2 prompt symbol
-# stays mode-agnostic. Defaults are Hydro-style reverse-video blocks: a
-# letter padded with spaces, drawn with the configured color used as the
-# background (via `--reverse`) so the terminal's default foreground shows
-# through. To get plain colored letters back, drop `--reverse` from the
-# color knobs; for the older bracket style, set the symbols to '[I]'/etc.
+# stays mode-agnostic. Defaults are reverse-video blocks: a letter padded
+# with spaces, drawn with the configured color used as the background (via
+# `--reverse`) so the terminal's default foreground shows through. To get
+# plain colored letters back, drop `--reverse` from the color knobs; for
+# the older bracket style, set the symbols to '[I]'/etc.
 set -q _fp_symbol_vi_default; or set -g _fp_symbol_vi_default ' N '
 set -q _fp_symbol_vi_insert;  or set -g _fp_symbol_vi_insert  ' I '
 set -q _fp_symbol_vi_visual;  or set -g _fp_symbol_vi_visual  ' V '
@@ -29,13 +29,13 @@ set -q _fp_symbol_vi_replace; or set -g _fp_symbol_vi_replace ' R '
 # Colors. Stored as lists so multi-arg styles like `red --bold` work directly
 # when expanded into `set_color`.
 # Path is rendered split: prefix (truncated dirs) in _fp_color_path, the last
-# component in _fp_color_path_tail. Hydro-style emphasis on the directory you
-# actually care about. Both default to cyan; the tail is bold.
+# component in _fp_color_path_tail — emphasis on the directory you actually
+# care about. Both default to cyan; the tail is bold.
 set -q _fp_color_path;      or set -g _fp_color_path      cyan
 set -q _fp_color_path_tail; or set -g _fp_color_path_tail cyan --bold
 
-# Most colored elements default to bold for a Hydro-like overall weight; time
-# and duration intentionally stay plain so they read as background metadata.
+# Most colored elements default to bold so the overall weight reads consistent;
+# time and duration intentionally stay plain so they read as background metadata.
 set -q _fp_color_branch;    or set -g _fp_color_branch    yellow --bold
 set -q _fp_color_operation; or set -g _fp_color_operation magenta --bold
 set -q _fp_color_modified;  or set -g _fp_color_modified  red --bold

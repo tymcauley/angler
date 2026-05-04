@@ -709,9 +709,7 @@ fn write_status_file_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 // bytes match the previously-written bytes. The skip is what breaks the
 // fish_prompt → request → SIGUSR1 → commandline-repaint → fish_prompt loop:
 // once state stabilizes, the second walk produces identical bytes and we
-// don't kick fish to repaint again. Hydro relies on the equivalent
-// `--on-variable` "fires only on change" semantic; we do the same dedup at
-// our IPC layer.
+// don't kick fish to repaint again.
 fn write_and_signal(
     path: &Path,
     request_path: &Path,

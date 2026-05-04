@@ -365,6 +365,56 @@ assert_not_contains "$out" "0.5s" "duration hidden when under threshold"
 set -g _fp_show_cmd_duration 0
 set -g CMD_DURATION 0
 
+# ----- exit code (` | N` after the duration on the left) -----
+
+# `false` makes $status=1 visible inside the command substitution that
+# wraps fish_prompt. _strip_ansi keeps substring checks tidy.
+function _strip_ansi
+    string replace -ar '\x1b\[[0-9;]*m' '' -- $argv
+end
+
+set -g _fp_show_exit_code 1
+set -g _fp_show_time 0
+set -e VIRTUAL_ENV
+set -e DIRENV_DIR
+set -g COLUMNS 200
+
+# Non-zero status: ` | N` appears on the left, not the legacy ` [N]`.
+write_status /tmp main 0 0 0 '' '' 0
+false
+set -l out (fish_prompt | string collect)
+set -l line1 (string split \n -- $out)[1]
+assert_not_contains "$line1" "[1]" "exit code no longer renders as [N] after path"
+assert_contains (_strip_ansi $line1) " | 1" "exit code renders as ` | N` on the left"
+
+# Pairs cleanly with a command duration: ` 1.0s | 1`.
+set -g _fp_show_cmd_duration 1
+set -g _fp_cmd_duration_threshold_ms 1000
+set -g CMD_DURATION 1000
+write_status /tmp main 0 0 0 '' '' 0
+false
+set -l out (fish_prompt | string collect)
+set -l line1 (string split \n -- $out)[1]
+assert_contains (_strip_ansi $line1) "1.0s | 1" "exit code follows the duration with ` | `"
+set -g _fp_show_cmd_duration 0
+set -g CMD_DURATION 0
+
+# status=0 → no ` | N` even with the toggle on.
+write_status /tmp main 0 0 0 '' '' 0
+true
+set -l out (fish_prompt | string collect)
+set -l line1 (string split \n -- $out)[1]
+assert_not_contains (_strip_ansi $line1) " | " "no pipe segment when status is zero"
+
+# Toggle off: ` | N` hidden even with status != 0.
+set -g _fp_show_exit_code 0
+write_status /tmp main 0 0 0 '' '' 0
+false
+set -l out (fish_prompt | string collect)
+set -l line1 (string split \n -- $out)[1]
+assert_not_contains (_strip_ansi $line1) " | 1" "exit code hidden when _fp_show_exit_code=0"
+set -g _fp_show_exit_code 1
+
 # Vi mode indicator now lives in fish_mode_prompt (left of line 1), not the
 # line-2 prompt symbol. fish_mode_prompt only renders when vi keybindings
 # are active, so the test stages that.

@@ -16,8 +16,7 @@ Two-line layout: path + git + command duration on line 1 (left), environmental i
 Line 1 left:
 
 - **red bold** `host:` prefix when SSH'd in (short hostname, signaling that the path that follows is on a remote machine)
-- **cyan** abbreviated working directory — Hydro-style: truncated parent components in plain cyan, the directory you're actually in in **bold cyan** (separately configurable as `_fp_color_path` and `_fp_color_path_tail`)
-- `[N]` in red after the path if the last command exited non-zero
+- **cyan** abbreviated working directory: truncated parent components in plain cyan, the directory you're actually in in **bold cyan** (separately configurable as `_fp_color_path` and `_fp_color_path_tail`)
 - **yellow** branch name (or 7-char SHA if detached)
 - `↑N` commits ahead of upstream, `↓N` behind
 - **red** `↯` if the upstream tracking branch is gone (typically a deleted remote branch you can prune)
@@ -25,7 +24,8 @@ Line 1 left:
 - **yellow** `?` if the dirty check couldn't finish within the deadline (default 200ms — you'll see it on huge repos with a cold disk cache; resolves on its own once the background scan finishes)
 - **blue** `≡N` for stash count (hidden if zero)
 - **magenta** `(rebasing)` / `(merging)` / etc. when an operation is in progress
-- **yellow** command duration (only for commands over `_fp_cmd_duration_threshold_ms`, default 1s — Hydro-style: always shown when applicable, regardless of terminal width)
+- **yellow** command duration (only for commands over `_fp_cmd_duration_threshold_ms`, default 1s; always shown when applicable, regardless of terminal width)
+- **red bold** ` | N` after the duration if the last command exited non-zero — the `|` shares the exit code's red bold so the two read as one unit. Always shown when applicable, regardless of terminal width.
 
 Line 1 right (only when there's room):
 
@@ -33,10 +33,9 @@ Line 1 right (only when there's room):
 - **green** `direnv` indicator when `$DIRENV_DIR` is set
 - **gray** time `HH:MM:SS`
 
-When the terminal is narrow, indicators on the right drop in priority order to keep things on one line: venv → direnv → time (venv goes first).
-The right side disappears entirely when even time can't fit alongside the left.
+When the terminal is too narrow, the indicators on the right drop one at a time in the order listed (leftmost first) until what remains fits.
 
-Line 1 leftmost (only when vi keybindings are active): a Hydro-style reverse-video mode block — ` I ` insert (green), ` N ` normal (red), ` V ` visual (magenta), ` R ` replace (yellow). Auto-skipped under emacs keybindings; toggle with `set -g _fp_show_vi_mode 0`.
+Line 1 leftmost (only when vi keybindings are active): a reverse-video mode block — ` I ` insert (green), ` N ` normal (red), ` V ` visual (magenta), ` R ` replace (yellow). Auto-skipped under emacs keybindings; toggle with `set -g _fp_show_vi_mode 0`.
 
 Line 2: prompt symbol (default `❯`).
 
@@ -92,7 +91,7 @@ set -g _fp_symbol_prompt    '❯'
 ```
 
 Colors are `set_color` arguments stored as fish lists, so multi-arg styles work directly.
-Most defaults are bolded for a Hydro-like overall weight; time and duration intentionally stay plain so they read as background metadata.
+Most defaults are bolded so the overall weight reads consistent; time and duration intentionally stay plain so they read as background metadata.
 
 ```fish
 set -g _fp_color_path       cyan          # path prefix (truncated parent dirs)
