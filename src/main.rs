@@ -316,10 +316,10 @@ struct DirtyFlags {
 }
 
 impl DirtyFlags {
-    fn is_full(&self) -> bool {
+    fn is_full(self) -> bool {
         self.staged && self.modified && self.untracked && self.conflict
     }
-    fn any(&self) -> bool {
+    fn any(self) -> bool {
         self.staged || self.modified || self.untracked || self.conflict
     }
 }
@@ -366,8 +366,7 @@ fn compute_status_for_repo(repo: &gix::Repository, dirty: DirtyState) -> Status 
 
     let upstream = head_name
         .as_ref()
-        .map(|n| compute_upstream(repo, n.as_ref()))
-        .unwrap_or(UpstreamState::None);
+        .map_or(UpstreamState::None, |n| compute_upstream(repo, n.as_ref()));
 
     Status {
         branch,
@@ -383,7 +382,7 @@ fn compute_status_for_repo(repo: &gix::Repository, dirty: DirtyState) -> Status 
 // zero stashes (the normal case for repos that have never been stashed).
 fn count_stashes(git_dir: &Path) -> u32 {
     match std::fs::read_to_string(git_dir.join("logs/refs/stash")) {
-        Ok(content) => content.lines().count() as u32,
+        Ok(content) => u32::try_from(content.lines().count()).expect("stash count overflows u32"),
         Err(_) => 0,
     }
 }
@@ -415,11 +414,11 @@ fn detect_operation(git_dir: &Path) -> Option<&'static str> {
 //     i.e., remote branch was deleted, typically via squash-merge cleanup.
 //   - Tracking with ahead/behind counts otherwise (symmetric difference walk).
 fn compute_upstream(repo: &gix::Repository, head_name: &gix::refs::FullNameRef) -> UpstreamState {
-    let tracking =
-        match repo.branch_remote_tracking_ref_name(head_name, gix::remote::Direction::Fetch) {
-            Some(Ok(t)) => t,
-            _ => return UpstreamState::None,
-        };
+    let Some(Ok(tracking)) =
+        repo.branch_remote_tracking_ref_name(head_name, gix::remote::Direction::Fetch)
+    else {
+        return UpstreamState::None;
+    };
 
     let upstream_id = match repo
         .find_reference(tracking.as_ref())
@@ -440,8 +439,10 @@ fn compute_upstream(repo: &gix::Repository, head_name: &gix::refs::FullNameRef) 
             .with_hidden([hide])
             .all()
             .ok()
-            .map(|walk| walk.filter_map(Result::ok).count() as u32)
-            .unwrap_or(0)
+            .map_or(0, |walk| {
+                u32::try_from(walk.filter_map(Result::ok).count())
+                    .expect("ahead/behind count overflows u32")
+            })
     };
 
     UpstreamState::Tracking {
@@ -489,12 +490,11 @@ fn compute_dirty(
         }
     });
 
-    match rx.recv_timeout(deadline) {
-        Ok(result) => result,
-        Err(_) => {
-            log::info!("dirty_deferred deadline_ms={}", deadline.as_millis());
-            DirtyState::Unknown
-        }
+    if let Ok(result) = rx.recv_timeout(deadline) {
+        result
+    } else {
+        log::info!("dirty_deferred deadline_ms={}", deadline.as_millis());
+        DirtyState::Unknown
     }
 }
 
@@ -502,14 +502,12 @@ fn compute_dirty(
 // Drains the iterator (or short-circuits when all four flags are observed)
 // and returns Clean / Dirty(flags) / Unknown (only on gix errors).
 fn compute_dirty_unbounded(repo: &gix::Repository) -> DirtyState {
-    let platform = match repo.status(gix::progress::Discard) {
-        Ok(p) => p,
-        Err(_) => return DirtyState::Unknown,
+    let Ok(platform) = repo.status(gix::progress::Discard) else {
+        return DirtyState::Unknown;
     };
 
-    let iter = match platform.into_iter(None) {
-        Ok(it) => it,
-        Err(_) => return DirtyState::Unknown,
+    let Ok(iter) = platform.into_iter(None) else {
+        return DirtyState::Unknown;
     };
 
     let mut flags = DirtyFlags::default();

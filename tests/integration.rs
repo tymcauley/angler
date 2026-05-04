@@ -44,7 +44,7 @@ impl Harness {
         let rc = unsafe { libc::mkfifo(c_path.as_ptr(), 0o600) };
         assert_eq!(rc, 0, "mkfifo failed");
 
-        let pid = std::process::id() as i32;
+        let pid = i32::try_from(std::process::id()).unwrap();
         let mut cmd = Command::new(DAEMON);
         cmd.args([
             "--fish-pid",
@@ -93,13 +93,12 @@ impl Harness {
                     return fields;
                 }
             }
-            if Instant::now() >= deadline {
-                panic!(
-                    "daemon did not respond for {} within {:?}",
-                    expected_path.display(),
-                    RESPONSE_TIMEOUT
-                );
-            }
+            assert!(
+                Instant::now() < deadline,
+                "daemon did not respond for {} within {:?}",
+                expected_path.display(),
+                RESPONSE_TIMEOUT
+            );
             std::thread::sleep(Duration::from_millis(10));
         }
     }
@@ -661,9 +660,10 @@ fn log_file_records_lifecycle_events() {
                 break s;
             }
         }
-        if Instant::now() >= deadline {
-            panic!("log file never grew to include 'status': {log_path:?}");
-        }
+        assert!(
+            Instant::now() < deadline,
+            "log file never grew to include 'status': {log_path:?}"
+        );
         std::thread::sleep(Duration::from_millis(20));
     };
 
@@ -701,7 +701,7 @@ fn no_log_file_created_when_flag_omitted() {
 
     let names: Vec<String> = std::fs::read_dir(h._state.path())
         .unwrap()
-        .filter_map(|e| e.ok())
+        .filter_map(Result::ok)
         .map(|e| e.file_name().to_string_lossy().to_string())
         .collect();
 
