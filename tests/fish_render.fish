@@ -10,6 +10,14 @@ set -ga fish_function_path $repo_root/functions
 # in scripted mode.
 source $repo_root/conf.d/fish-prompt.fish
 
+# fish_prompt fires _fp_request_status on every render to keep state
+# fresh. That function is defined inside conf.d's interactive-gated
+# block, so it doesn't exist in scripted mode. Stub it as a no-op so
+# fish_prompt doesn't spam "Unknown command" errors during tests.
+# (The respawn test below installs its own real spawn helpers.)
+function _fp_request_status
+end
+
 # Disable time and command-duration rendering in tests: their output is
 # timing-dependent and the digits would collide with substring assertions
 # against numeric counts (ahead/behind/stash). Vi mode is also off by default,

@@ -712,6 +712,52 @@ fn no_log_file_created_when_flag_omitted() {
 }
 
 #[test]
+fn repeated_identical_requests_skip_after_first_write() {
+    // fish_prompt fires a request on every render. Without idempotency,
+    // each request produces a SIGUSR1, which triggers commandline -f
+    // repaint, which fires another fish_prompt, which fires another
+    // request — an infinite loop. The daemon must skip writes (and the
+    // signal) when the new bytes match the last write.
+    let log_dir = tempfile::tempdir().unwrap();
+    let log_path = log_dir.path().join("daemon.log");
+    let h = Harness::with_args(&["--log-file", log_path.to_str().unwrap()]);
+    let repo = make_clean_repo();
+
+    h.request(repo.path());
+    let _ = h.wait_for(repo.path());
+
+    // Subsequent identical requests should be skipped at the daemon.
+    for _ in 0..5 {
+        h.request(repo.path());
+    }
+
+    // Wait for the log to settle: at least 5 status_skip lines should
+    // accumulate, since each request fires the worker but the bytes match.
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let contents = loop {
+        if let Ok(s) = std::fs::read_to_string(&log_path)
+            && s.matches("status_skip").count() >= 5
+        {
+            break s;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "expected ≥5 status_skip lines; log was:\n{}",
+            std::fs::read_to_string(&log_path).unwrap_or_default(),
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    };
+
+    // Exactly one "status branch=…" write — the first request. The next
+    // five all fall through to status_skip.
+    let writes = contents.matches("] status branch=").count();
+    assert_eq!(
+        writes, 1,
+        "expected exactly 1 status write, got {writes}; log:\n{contents}",
+    );
+}
+
+#[test]
 fn multiple_requests_in_sequence() {
     let h = Harness::new();
     let clean = make_clean_repo();

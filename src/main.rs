@@ -117,6 +117,11 @@ fn main() {
     // discarded if its generation no longer matches — the user has moved on
     // and the answer is for a stale prompt state.
     let mut current_generation: u64 = 0;
+    // Bytes of the most recent status file write. Used to skip redundant
+    // writes + SIGUSR1s when a fresh recompute lands on the same state.
+    // Without this, fish_prompt firing a request on every render would
+    // form a SIGUSR1 → repaint → request → SIGUSR1 loop.
+    let mut last_status_bytes: Option<Vec<u8>> = None;
 
     while let Ok(event) = rx.recv() {
         match event {
@@ -157,9 +162,14 @@ fn main() {
                         compute_dirty(dirty_deadline, current_generation, path.clone(), tx.clone());
                     compute_status_for_repo(r, dirty)
                 });
-                let _ = write_status_file(&status_file, &path, status.as_ref());
-                log_status_event(status.as_ref(), start.elapsed());
-                signal_fish(fish_pid);
+                write_and_signal(
+                    &status_file,
+                    &path,
+                    status.as_ref(),
+                    start.elapsed(),
+                    fish_pid,
+                    &mut last_status_bytes,
+                );
             }
             Event::WatcherFired => {
                 let Some(pwd) = current_pwd.clone() else {
@@ -172,9 +182,14 @@ fn main() {
                         compute_dirty(dirty_deadline, current_generation, pwd.clone(), tx.clone());
                     compute_status_for_repo(&r, dirty)
                 });
-                let _ = write_status_file(&status_file, &pwd, status.as_ref());
-                log_status_event(status.as_ref(), start.elapsed());
-                signal_fish(fish_pid);
+                write_and_signal(
+                    &status_file,
+                    &pwd,
+                    status.as_ref(),
+                    start.elapsed(),
+                    fish_pid,
+                    &mut last_status_bytes,
+                );
             }
             Event::DirtyResolved {
                 generation,
@@ -201,10 +216,15 @@ fn main() {
                 let start = Instant::now();
                 let result_label = result.encoded();
                 let status = compute_status_for_repo(&repo, result);
-                let _ = write_status_file(&status_file, &pwd, Some(&status));
                 log::info!("dirty_resolved result={result_label}");
-                log_status_event(Some(&status), start.elapsed());
-                signal_fish(fish_pid);
+                write_and_signal(
+                    &status_file,
+                    &pwd,
+                    Some(&status),
+                    start.elapsed(),
+                    fish_pid,
+                    &mut last_status_bytes,
+                );
             }
         }
     }
@@ -474,10 +494,16 @@ fn compute_dirty(
     let (tx, rx) = mpsc::channel::<DirtyState>();
 
     std::thread::spawn(move || {
+        let walk_start = Instant::now();
         let result = match gix::discover(&repo_path).ok() {
             Some(r) => compute_dirty_unbounded(&r),
             None => DirtyState::Unknown,
         };
+        log::info!(
+            "dirty_walk dur_ms={} result={}",
+            walk_start.elapsed().as_millis(),
+            result.encoded(),
+        );
         // Try to deliver synchronously first. If the main thread is no longer
         // waiting (deadline already passed and rx is dropped), fall back to
         // the main channel so the deferred result still lands.
@@ -551,44 +577,79 @@ fn classify_item(item: gix::status::Item, flags: &mut DirtyFlags) {
     }
 }
 
-fn write_status_file(
-    path: &Path,
-    request_path: &Path,
-    status: Option<&Status>,
-) -> std::io::Result<()> {
+// Wire format: 8 NUL-terminated fields:
+//   request_path, branch, ahead, behind, dirty, operation, upstream, stash
+// For non-repos, the last 7 fields are empty. ahead/behind are "0" when no
+// upstream or upstream is gone; the upstream field carries the qualitative
+// signal.
+fn build_status_bytes(request_path: &Path, status: Option<&Status>) -> Vec<u8> {
+    let mut buf = Vec::with_capacity(256);
+    buf.extend_from_slice(request_path.as_os_str().as_bytes());
+    buf.push(0);
+    if let Some(s) = status {
+        let (ahead, behind, upstream_label) = match s.upstream {
+            UpstreamState::Tracking { ahead, behind } => (ahead, behind, ""),
+            UpstreamState::Gone => (0, 0, "gone"),
+            UpstreamState::None => (0, 0, ""),
+        };
+        write!(
+            buf,
+            "{}\0{}\0{}\0{}\0{}\0{}\0{}\0",
+            s.branch,
+            ahead,
+            behind,
+            s.dirty.encoded(),
+            s.operation.unwrap_or(""),
+            upstream_label,
+            s.stash,
+        )
+        .expect("writing to a Vec<u8> never fails");
+    } else {
+        buf.extend_from_slice(b"\0\0\0\0\0\0\0");
+    }
+    buf
+}
+
+fn write_status_file_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     let tmp = path.with_extension("tmp");
     {
         let mut f = std::fs::File::create(&tmp)?;
-        // Each field NUL-terminated. 8 fields:
-        //   request_path, branch, ahead, behind, dirty, operation, upstream, stash
-        // For non-repos, the last 7 fields are empty. ahead/behind are "0"
-        // when no upstream or upstream is gone; the upstream field carries
-        // the qualitative signal.
-        f.write_all(request_path.as_os_str().as_bytes())?;
-        f.write_all(b"\0")?;
-        if let Some(s) = status {
-            let (ahead, behind, upstream_label) = match s.upstream {
-                UpstreamState::Tracking { ahead, behind } => (ahead, behind, ""),
-                UpstreamState::Gone => (0, 0, "gone"),
-                UpstreamState::None => (0, 0, ""),
-            };
-            write!(
-                f,
-                "{}\0{}\0{}\0{}\0{}\0{}\0{}\0",
-                s.branch,
-                ahead,
-                behind,
-                s.dirty.encoded(),
-                s.operation.unwrap_or(""),
-                upstream_label,
-                s.stash,
-            )?;
-        } else {
-            f.write_all(b"\0\0\0\0\0\0\0")?;
-        }
+        f.write_all(bytes)?;
     }
     std::fs::rename(&tmp, path)?;
     Ok(())
+}
+
+// Writes a fresh status file and signals fish — but skips both when the new
+// bytes match the previously-written bytes. The skip is what breaks the
+// fish_prompt → request → SIGUSR1 → commandline-repaint → fish_prompt loop:
+// once state stabilizes, the second walk produces identical bytes and we
+// don't kick fish to repaint again. Hydro relies on the equivalent
+// `--on-variable` "fires only on change" semantic; we do the same dedup at
+// our IPC layer.
+fn write_and_signal(
+    path: &Path,
+    request_path: &Path,
+    status: Option<&Status>,
+    elapsed: Duration,
+    fish_pid: i32,
+    last_bytes: &mut Option<Vec<u8>>,
+) {
+    let new_bytes = build_status_bytes(request_path, status);
+    if last_bytes.as_deref() == Some(new_bytes.as_slice()) {
+        log::info!(
+            "status_skip reason=unchanged dur_ms={}",
+            elapsed.as_millis()
+        );
+        return;
+    }
+    if let Err(e) = write_status_file_atomic(path, &new_bytes) {
+        log::error!("status_write_failed err={e}");
+        return;
+    }
+    log_status_event(status, elapsed);
+    signal_fish(fish_pid);
+    *last_bytes = Some(new_bytes);
 }
 
 // One-line summary of the most recent status write. Always called right
