@@ -166,12 +166,13 @@ The Makefile install is the same thing in one command, plus dev-friendly symlink
 
 ## How it works
 
-A per-shell daemon spawned at fish init reads PWD changes from a FIFO (one line per `cd`), computes branch / ahead-behind / dirty via gix, writes a NUL-delimited status file, and sends SIGUSR1 to fish — whose `--on-signal` handler calls `commandline -f repaint`.
+A per-shell daemon spawned at fish init reads PWD changes from a FIFO (one line per `cd`), computes git status via gix, writes a NUL-delimited status file, and sends SIGUSR1 to fish — whose `--on-signal` handler calls `commandline -f repaint`.
 The daemon also watches `.git/` (and `.git/refs/` recursively) via `notify-debouncer-full`, so external git operations trigger the same render path.
-The dirty check is bounded by a deadline; on huge repos it returns "unknown" rather than blocking.
+The dirty check is bounded by a deadline; on huge repos it returns "unknown" synchronously and the prompt updates again once the background scan finishes.
 Daemon cleanup is automatic via a `getppid()` watchdog — no orphans on shell exit.
 
-The wire protocol is five NUL-terminated fields: `<requested-path>\0<branch>\0<ahead>\0<behind>\0<dirty>\0`.
+The wire protocol is eight NUL-terminated fields: `<requested-path>\0<branch>\0<ahead>\0<behind>\0<dirty>\0<operation>\0<upstream>\0<stash>\0`.
+`branch` is empty when the path isn't a git repo; `dirty` is `0` for clean, `?` for unknown, or some combination of `+` (staged), `*` (modified), `u` (untracked), `!` (conflict); `operation` is a label like `rebasing`/`merging` or empty; `upstream` is `gone` or empty; `stash` is the stash count.
 `fish_prompt` ignores responses whose path doesn't match the current `$PWD`, so stale fires during rapid `cd` are harmless.
 
 ## Development
