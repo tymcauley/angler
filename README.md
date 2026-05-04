@@ -72,8 +72,9 @@ then `exec fish`.
 
 ## Configuration
 
-All knobs are fish global variables.
-Set them in your `config.fish` (sourced after our `conf.d/`) and they'll override the defaults; otherwise the defaults apply.
+Knobs are fish variables you override.
+Most are read at prompt-render time, so `set -g` in `config.fish` works fine.
+A couple — `_fp_dirty_deadline_ms` and `_fp_log_file` — are read at daemon-spawn time and need `set -U` (see the daemon-tuning subsection below for why).
 
 Symbols:
 
@@ -116,7 +117,7 @@ set -g _fp_show_cmd_duration 1
 set -g _fp_show_ssh          1
 set -g _fp_show_venv         1
 set -g _fp_show_direnv       1
-set -g _fp_show_vi_mode      0   # opt-in; only meaningful with vi keybindings
+set -g _fp_show_vi_mode      1   # auto-skipped under emacs keybindings
 set -g _fp_cmd_duration_threshold_ms 1000   # only show duration past this
 ```
 
@@ -165,20 +166,23 @@ Per-session overrides via `set -g` in the running shell also work for those.
 If the prompt feels off — slow, stale, missing git info — point the daemon at a log file:
 
 ```fish
-set -g _fp_log_file ~/.cache/fish-prompt.log
+set -U _fp_log_file ~/.cache/fish-prompt.log
 exec fish
 ```
 
+(`set -U`, not `set -g` — the daemon reads this when it spawns, before `config.fish` runs. See the daemon-tuning notes above.)
+
 Each line is `<rfc3339-timestamp> [<daemon-pid>] <event> key=value …`.
-Events include `start`, `request`, `watch` / `unwatch`, `watcher_fire`, `status` (with `dur_ms` latency), `dirty_deferred` / `dirty_resolved` (deadline path), and `parent_died` (watchdog exit).
+Events include `start`, `request`, `watch` / `unwatch`, `watcher_fire`, `dirty_walk` (with `dur_ms` walk timing), `dirty_deferred` (deadline path), `walk_resolved` / `walk_dropped` / `walk_coalesced` / `walk_pending_kicked` (the coalescing pipeline), `status` / `status_skip` (idempotent write vs. unchanged-bytes skip), and `parent_died` (watchdog exit).
 
 ```
 2026-05-04T18:26:40.659Z [4592] request pwd=/Users/tynan/code/fish-prompt
 2026-05-04T18:26:40.661Z [4592] watch git_dir=/Users/tynan/code/fish-prompt/.git
+2026-05-04T18:26:40.662Z [4592] dirty_walk dur_ms=2 result=*u
 2026-05-04T18:26:40.663Z [4592] status branch=main dirty=*u ahead=0 behind=0 upstream= stash=0 op= dur_ms=3
 ```
 
-You can use a fixed path across all shells (each daemon prefixes its lines with its PID) or per-shell logs via `set -g _fp_log_file /tmp/fp-$fish_pid.log`.
+You can use a fixed path across all shells (each daemon prefixes its lines with its PID) or per-shell logs via `set -U _fp_log_file /tmp/fp-$fish_pid.log`.
 
 ## Uninstall
 
@@ -201,9 +205,11 @@ The Makefile install is the same thing in one command, plus dev-friendly symlink
 
 ## How it works
 
-A per-shell daemon spawned at fish init reads PWD changes from a FIFO (one line per `cd`), computes git status via gix, writes a NUL-delimited status file, and sends SIGUSR1 to fish — whose `--on-signal` handler calls `commandline -f repaint`.
+A per-shell daemon spawned at fish init reads PWD changes from a FIFO, computes git status via gix, writes a NUL-delimited status file, and sends SIGUSR1 to fish — whose `--on-signal` handler calls `commandline -f repaint`.
+`fish_prompt` also pokes the daemon on every prompt render, so worktree-only changes (an editor saving a file between cds) get caught the next time anything redraws the prompt; the daemon dedupes its writes against the last-written bytes, so this per-render kick doesn't form a SIGUSR1 → repaint → request → SIGUSR1 loop.
 The daemon also watches `.git/` (and `.git/refs/` recursively) via `notify-debouncer-full`, so external git operations trigger the same render path.
 The dirty check is bounded by a deadline; on huge repos it returns "unknown" synchronously and the prompt updates again once the background scan finishes.
+A persistent worker thread serializes all gix walks: bursts (e.g., `git checkout` rewriting many files) collapse to one walk plus at most one follow-up rather than spawning concurrent walks.
 Daemon cleanup is automatic via a `getppid()` watchdog — no orphans on shell exit.
 If the daemon dies (panic, OOM, manual kill), fish respawns it before the next request rather than hanging on the FIFO write or rendering an empty git block forever.
 
