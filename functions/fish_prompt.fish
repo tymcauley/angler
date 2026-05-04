@@ -81,10 +81,10 @@ function _fp_render_left --argument-names last_status cmd_duration
                 end
                 if test "$_fp_show_ahead_behind" = 1
                     if test "$ahead" != 0; and test -n "$ahead"
-                        set buf $buf (set_color $_fp_color_ahead) "$_fp_symbol_ahead$ahead"
+                        set buf $buf (set_color $_fp_color_ahead) " $_fp_symbol_ahead$ahead"
                     end
                     if test "$behind" != 0; and test -n "$behind"
-                        set buf $buf (set_color $_fp_color_behind) "$_fp_symbol_behind$behind"
+                        set buf $buf (set_color $_fp_color_behind) " $_fp_symbol_behind$behind"
                     end
                 end
                 if test "$upstream" = gone

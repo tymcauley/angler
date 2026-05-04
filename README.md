@@ -7,7 +7,7 @@ Branch info appears the moment you hit Enter; dirty / ahead / behind fill in sho
 ## Output
 
 ```
-host:~/code/myproject main↑2 * 1.4s                          myproject direnv 14:23:01
+host:~/code/myproject main ↑2 * 1.4s                         myproject direnv 14:23:01
 ❯
 ```
 
