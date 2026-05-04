@@ -448,6 +448,75 @@ command rm -f $_fp_status_file
 set -l out (fish_prompt | string collect)
 assert_contains "$out" "tmp" "still renders cwd with missing status file"
 
+# ----- daemon respawn -----
+#
+# conf.d's spawn block is gated behind `status is-interactive`, so we can't
+# reach it from this scripted test. Instead, set up our own state and call
+# the autoloaded helpers (_fp_spawn_daemon / _fp_ensure_daemon) directly.
+
+set -l daemon_path
+if command -q fish-prompt-daemon
+    set daemon_path (command -v fish-prompt-daemon)
+else if test -x $repo_root/target/release/fish-prompt-daemon
+    set daemon_path $repo_root/target/release/fish-prompt-daemon
+    set -gx PATH $repo_root/target/release $PATH
+end
+
+if test -z "$daemon_path"
+    echo "  skip: fish-prompt-daemon not found (run `cargo build --release` first)"
+else
+    set -l saved_status_file $_fp_status_file
+    set -g _fp_dir (command mktemp -d -t fp-respawn-test)
+    set -g _fp_status_file $_fp_dir/status
+    set -g _fp_request_fifo $_fp_dir/req
+    command mkfifo $_fp_request_fifo
+
+    # SIGUSR1 default action is terminate. The daemon signals fish on every
+    # status write; install a no-op handler for the duration of the test.
+    function _fp_test_sigusr1 --on-signal SIGUSR1
+    end
+
+    # Initial spawn.
+    _fp_spawn_daemon
+    set -l first_pid $_fp_daemon_pid
+    if test -n "$first_pid"; and kill -0 $first_pid 2>/dev/null
+        ok "_fp_spawn_daemon launches a daemon"
+    else
+        fail "_fp_spawn_daemon launches a daemon"
+        echo "       _fp_daemon_pid=$_fp_daemon_pid"
+    end
+
+    # Kill it. Clear the rate-limit cookie so respawn isn't blocked by it.
+    command kill -9 $first_pid 2>/dev/null
+    set -e _fp_daemon_last_spawn_attempt
+    sleep 0.2
+
+    _fp_ensure_daemon
+    set -l second_pid $_fp_daemon_pid
+    if test -n "$second_pid"; and test "$second_pid" != "$first_pid"; and kill -0 $second_pid 2>/dev/null
+        ok "_fp_ensure_daemon respawns after daemon death"
+    else
+        fail "_fp_ensure_daemon respawns after daemon death"
+        echo "       first=$first_pid second=$second_pid"
+    end
+
+    # Liveness fast-path: when alive, ensure must be a no-op.
+    set -l before_pid $_fp_daemon_pid
+    _fp_ensure_daemon
+    if test "$_fp_daemon_pid" = "$before_pid"
+        ok "_fp_ensure_daemon is a no-op when daemon is alive"
+    else
+        fail "_fp_ensure_daemon is a no-op when daemon is alive"
+        echo "       before=$before_pid after=$_fp_daemon_pid"
+    end
+
+    # Cleanup.
+    command kill -9 $_fp_daemon_pid 2>/dev/null
+    command rm -rf $_fp_dir
+    set -g _fp_status_file $saved_status_file
+    functions -e _fp_test_sigusr1
+end
+
 # ----- summary -----
 
 echo

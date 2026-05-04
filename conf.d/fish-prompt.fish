@@ -84,15 +84,17 @@ command mkfifo $_fp_request_fifo
 # Daemon opens the FIFO with O_RDWR (non-blocking) and exits when its parent
 # (this fish) dies, via a getppid() watchdog. So fish doesn't need to hold a
 # long-lived fd open.
-command fish-prompt-daemon \
-    --fish-pid $fish_pid \
-    --status-file $_fp_status_file \
-    --request-fifo $_fp_request_fifo \
-    --dirty-deadline-ms $_fp_dirty_deadline_ms &
-disown
+_fp_spawn_daemon
 
+# _fp_ensure_daemon respawns the daemon if it has died. Without this, a dead
+# daemon leaves the FIFO with no reader, and `echo $PWD >$_fp_request_fifo`
+# blocks on open(O_WRONLY) — i.e., the next cd hangs the shell. The write is
+# also backgrounded so the rare respawn race (fish writes before the new
+# daemon has opened the FIFO) can't stall fish either.
 function _fp_request_status --on-variable PWD
-    echo $PWD >$_fp_request_fifo
+    _fp_ensure_daemon
+    echo $PWD >$_fp_request_fifo &
+    disown 2>/dev/null
 end
 
 function _fp_repaint --on-signal SIGUSR1
