@@ -384,6 +384,53 @@ set -g _fp_show_vi_mode 0
 set -l out (fish_mode_prompt | string collect)
 assert_not_contains "$out" "INSERT" "fish_mode_prompt empty when _fp_show_vi_mode=0"
 
+# ----- regression: line 1 padding accounts for fish_mode_prompt width -----
+#
+# fish renders fish_mode_prompt to the left of fish_prompt's line 1. The
+# mode-prompt width has to come out of fish_prompt's padding budget; without
+# that subtraction, line 1 + mode prompt exceeds $COLUMNS and fish prepends
+# `…` and trims from the left. See commit 5cb1d2a.
+
+set -g _fp_symbol_vi_insert '[I]'
+set -g _fp_show_vi_mode 1
+set -gx fish_key_bindings fish_vi_key_bindings
+set -g fish_bind_mode insert
+set -g _fp_show_time 1
+set -g COLUMNS 80
+
+set -l mode_w (string length --visible -- (fish_mode_prompt | string collect))
+if test $mode_w -le 0
+    fail "fish_mode_prompt produced no output (test setup broken)"
+end
+
+write_status /tmp main 0 0 0 '' '' 0
+set -l out (fish_prompt | string collect)
+set -l line1 (string split \n -- $out)[1]
+set -l line1_w (string length --visible -- "$line1")
+set -l combined (math "$mode_w + $line1_w")
+
+# When the right side renders, fish_prompt produces line 1 with width
+# exactly $COLUMNS - mode_w; fish then prepends mode_w of its own. If the
+# subtraction is missing, line 1 alone is already $COLUMNS wide and the
+# combined render overflows.
+if test $combined -eq $COLUMNS
+    ok "line 1 + fish_mode_prompt width equals \$COLUMNS"
+else
+    fail "line 1 + fish_mode_prompt width equals \$COLUMNS"
+    echo "       expected: mode_w + line1_w = $COLUMNS"
+    echo "       actual:   $mode_w + $line1_w = $combined"
+end
+
+assert_contains "$line1" "main" "branch survives when mode prompt is active"
+if string match -qr '[0-9]{2}:[0-9]{2}:[0-9]{2}' -- "$line1"
+    ok "time survives when mode prompt is active"
+else
+    fail "time survives when mode prompt is active"
+    echo "       actual line 1: $line1"
+end
+
+set -g _fp_show_time 0
+
 # Reset for following tests.
 set -g _fp_symbol_vi_default '[N]'
 set -g _fp_symbol_vi_insert  '[I]'
