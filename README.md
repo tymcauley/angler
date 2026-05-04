@@ -36,7 +36,9 @@ Line 1 right (only when there's room):
 When the terminal is narrow, indicators on the right drop in priority order to keep things on one line: venv → direnv → time (venv goes first).
 The right side disappears entirely when even time can't fit alongside the left.
 
-Line 2: vi-mode-aware prompt symbol (default `❯`, opt in via `_fp_show_vi_mode = 1`).
+Line 1 leftmost (only when vi keybindings are active): a Hydro-style reverse-video mode block — ` I ` insert (green), ` N ` normal (red), ` V ` visual (magenta), ` R ` replace (yellow). Auto-skipped under emacs keybindings; toggle with `set -g _fp_show_vi_mode 0`.
+
+Line 2: prompt symbol (default `❯`).
 
 ## Requirements
 
@@ -126,14 +128,21 @@ set -g _fp_color_venv   blue
 set -g _fp_color_direnv green
 ```
 
-Vi-mode prompt symbols (line 2, when `_fp_show_vi_mode = 1`):
+Vi-mode block (line 1 leftmost, rendered by `fish_mode_prompt` when vi keybindings are active):
 
 ```fish
-set -g _fp_symbol_vi_default '❮'   # vim normal mode
-set -g _fp_symbol_vi_visual  'V'   # visual mode
-set -g _fp_symbol_vi_replace 'R'   # replace mode
-# insert mode falls through to _fp_symbol_prompt
+set -g _fp_symbol_vi_insert  ' I '   # insert mode
+set -g _fp_symbol_vi_default ' N '   # normal mode
+set -g _fp_symbol_vi_visual  ' V '   # visual mode
+set -g _fp_symbol_vi_replace ' R '   # replace mode
+
+set -g _fp_color_vi_insert  green   --reverse --bold
+set -g _fp_color_vi_default red     --reverse --bold
+set -g _fp_color_vi_visual  magenta --reverse --bold
+set -g _fp_color_vi_replace yellow  --reverse --bold
 ```
+
+Drop `--reverse` from the colors for plain colored letters; set the symbols to `'[I]'`/`'[N]'`/etc. for the older bracket style.
 
 Daemon tuning:
 

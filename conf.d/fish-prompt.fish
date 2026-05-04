@@ -16,11 +16,15 @@ set -q _fp_symbol_prompt;    or set -g _fp_symbol_prompt    '❯'
 
 # Vi mode indicator strings. Rendered by fish_mode_prompt (left of line 1)
 # when $fish_key_bindings = fish_vi_key_bindings. The line-2 prompt symbol
-# stays mode-agnostic.
-set -q _fp_symbol_vi_default; or set -g _fp_symbol_vi_default '[N]'
-set -q _fp_symbol_vi_insert;  or set -g _fp_symbol_vi_insert  '[I]'
-set -q _fp_symbol_vi_visual;  or set -g _fp_symbol_vi_visual  '[V]'
-set -q _fp_symbol_vi_replace; or set -g _fp_symbol_vi_replace '[R]'
+# stays mode-agnostic. Defaults are Hydro-style reverse-video blocks: a
+# letter padded with spaces, drawn with the configured color used as the
+# background (via `--reverse`) so the terminal's default foreground shows
+# through. To get plain colored letters back, drop `--reverse` from the
+# color knobs; for the older bracket style, set the symbols to '[I]'/etc.
+set -q _fp_symbol_vi_default; or set -g _fp_symbol_vi_default ' N '
+set -q _fp_symbol_vi_insert;  or set -g _fp_symbol_vi_insert  ' I '
+set -q _fp_symbol_vi_visual;  or set -g _fp_symbol_vi_visual  ' V '
+set -q _fp_symbol_vi_replace; or set -g _fp_symbol_vi_replace ' R '
 
 # Colors. Stored as lists so multi-arg styles like `red --bold` work directly
 # when expanded into `set_color`.
@@ -50,10 +54,10 @@ set -q _fp_color_ssh;       or set -g _fp_color_ssh       red --bold
 set -q _fp_color_venv;      or set -g _fp_color_venv      blue --bold
 set -q _fp_color_direnv;    or set -g _fp_color_direnv    green --bold
 set -q _fp_color_prompt;    or set -g _fp_color_prompt    green --bold
-set -q _fp_color_vi_default; or set -g _fp_color_vi_default red --bold
-set -q _fp_color_vi_insert;  or set -g _fp_color_vi_insert  green --bold
-set -q _fp_color_vi_visual;  or set -g _fp_color_vi_visual  magenta --bold
-set -q _fp_color_vi_replace; or set -g _fp_color_vi_replace yellow --bold
+set -q _fp_color_vi_default; or set -g _fp_color_vi_default red --reverse --bold
+set -q _fp_color_vi_insert;  or set -g _fp_color_vi_insert  green --reverse --bold
+set -q _fp_color_vi_visual;  or set -g _fp_color_vi_visual  magenta --reverse --bold
+set -q _fp_color_vi_replace; or set -g _fp_color_vi_replace yellow --reverse --bold
 
 # Toggles (1 = show, anything else = hide).
 set -q _fp_show_ahead_behind;       or set -g _fp_show_ahead_behind       1
