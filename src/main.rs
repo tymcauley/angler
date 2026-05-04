@@ -15,15 +15,26 @@ const DEBOUNCE: Duration = Duration::from_millis(150);
 enum Event {
     Request(PathBuf),
     WatcherFired,
-    /// A background dirty computation finished after the deadline expired.
-    /// `generation` and `pwd` together identify which request this resolution
-    /// belongs to — newer generations or PWD changes invalidate it.
-    DirtyResolved {
+    /// A walk finished. `generation` and `pwd` together identify which
+    /// request kicked the walk — newer generations or PWD changes mean the
+    /// answer is for a stale state and gets dropped.
+    WalkComplete {
         generation: u64,
         pwd: PathBuf,
         result: DirtyState,
     },
     Eof,
+}
+
+/// Sent from the main thread to the persistent worker thread. The worker
+/// processes one of these at a time (serializing all walks). When it
+/// finishes it always emits `Event::WalkComplete` to the main channel; if
+/// `deadline_tx` is present it ALSO best-effort-delivers the result there
+/// for an opportunistic synchronous wait on the request entry path.
+struct WalkRequest {
+    generation: u64,
+    pwd: PathBuf,
+    deadline_tx: Option<mpsc::Sender<DirtyState>>,
 }
 
 fn main() {
@@ -92,6 +103,12 @@ fn main() {
 
     spawn_fifo_reader(request_fifo, tx.clone());
 
+    // Persistent worker for gix walks. One worker = at most one walk in
+    // flight, ever. Coalescing falls out of the `walk_inflight` state we
+    // track in the main loop below.
+    let (work_tx, work_rx) = mpsc::channel::<WalkRequest>();
+    spawn_walk_worker(work_rx, tx.clone());
+
     let watch_tx = tx.clone();
     let mut debouncer: Debouncer<notify::RecommendedWatcher, FileIdMap> =
         new_debouncer(DEBOUNCE, None, move |result: DebounceEventResult| {
@@ -113,15 +130,21 @@ fn main() {
     // path-match guard discards.
     let mut current_pwd: Option<PathBuf> = None;
     let mut watched_git_dir: Option<PathBuf> = None;
-    // Bumped on every Request. A deferred dirty result (DirtyResolved) is
-    // discarded if its generation no longer matches — the user has moved on
-    // and the answer is for a stale prompt state.
+    // Bumped on every Request. A WalkComplete whose generation no longer
+    // matches is dropped — the user has moved on and the answer is for a
+    // stale prompt state.
     let mut current_generation: u64 = 0;
     // Bytes of the most recent status file write. Used to skip redundant
     // writes + SIGUSR1s when a fresh recompute lands on the same state.
     // Without this, fish_prompt firing a request on every render would
     // form a SIGUSR1 → repaint → request → SIGUSR1 loop.
     let mut last_status_bytes: Option<Vec<u8>> = None;
+    // Generation of the walk currently being processed by the worker, if
+    // any. While Some, new Request/WatcherFired events do not kick a walk;
+    // they just set walk_pending. When the walk completes, if pending was
+    // set, we kick exactly one more walk for the current state.
+    let mut walk_inflight: Option<u64> = None;
+    let mut walk_pending = false;
 
     while let Ok(event) = rx.recv() {
         match event {
@@ -138,30 +161,23 @@ fn main() {
                 // the repo (e.g., `git commit`), and have that change land in
                 // the gap between rendering and watch_repo — so the daemon
                 // never sees the event and the prompt goes stale.
-                let new_git_dir = repo.as_ref().map(|r| r.git_dir().to_path_buf());
-                if new_git_dir != watched_git_dir {
-                    if let Some(old) = watched_git_dir.take() {
-                        unwatch_repo(&mut debouncer, &old);
-                        log::info!("unwatch git_dir={}", old.display());
-                    }
-                    if let Some(ref new) = new_git_dir {
-                        match watch_repo(&mut debouncer, new) {
-                            Ok(()) => {
-                                watched_git_dir = Some(new.clone());
-                                log::info!("watch git_dir={}", new.display());
-                            }
-                            Err(e) => {
-                                log::error!("watch_failed git_dir={} err={e}", new.display());
-                            }
-                        }
-                    }
-                }
+                swap_repo_watch(&mut debouncer, repo.as_ref(), &mut watched_git_dir);
 
-                let status = repo.as_ref().map(|r| {
-                    let dirty =
-                        compute_dirty(dirty_deadline, current_generation, path.clone(), tx.clone());
-                    compute_status_for_repo(r, dirty)
-                });
+                let Some(dirty) = maybe_kick_walk(
+                    &work_tx,
+                    &mut walk_inflight,
+                    &mut walk_pending,
+                    current_generation,
+                    path.clone(),
+                    dirty_deadline,
+                ) else {
+                    // Coalesced: a walk is already in flight. Don't write
+                    // status; the WalkComplete handler will update once the
+                    // walk lands. Writing dirty=? here would briefly show
+                    // ? in the prompt and create a real→?→real flicker.
+                    continue;
+                };
+                let status = repo.as_ref().map(|r| compute_status_for_repo(r, dirty));
                 write_and_signal(
                     &status_file,
                     &path,
@@ -177,11 +193,20 @@ fn main() {
                 };
                 let start = Instant::now();
                 log::info!("watcher_fire pwd={}", pwd.display());
-                let status = gix::discover(&pwd).ok().map(|r| {
-                    let dirty =
-                        compute_dirty(dirty_deadline, current_generation, pwd.clone(), tx.clone());
-                    compute_status_for_repo(&r, dirty)
-                });
+
+                let Some(dirty) = maybe_kick_walk(
+                    &work_tx,
+                    &mut walk_inflight,
+                    &mut walk_pending,
+                    current_generation,
+                    pwd.clone(),
+                    dirty_deadline,
+                ) else {
+                    continue;
+                };
+                let status = gix::discover(&pwd)
+                    .ok()
+                    .map(|r| compute_status_for_repo(&r, dirty));
                 write_and_signal(
                     &status_file,
                     &pwd,
@@ -191,43 +216,156 @@ fn main() {
                     &mut last_status_bytes,
                 );
             }
-            Event::DirtyResolved {
+            Event::WalkComplete {
                 generation,
                 pwd,
                 result,
             } => {
-                // Drop stale results: the user has moved on, or the request
-                // we ran for has been superseded.
-                if generation != current_generation {
+                walk_inflight = None;
+
+                let still_current =
+                    generation == current_generation && Some(&pwd) == current_pwd.as_ref();
+                if still_current {
+                    let result_label = result.encoded();
+                    log::info!("walk_resolved result={result_label}");
+                    if let Ok(repo) = gix::discover(&pwd) {
+                        let start = Instant::now();
+                        let status = compute_status_for_repo(&repo, result);
+                        write_and_signal(
+                            &status_file,
+                            &pwd,
+                            Some(&status),
+                            start.elapsed(),
+                            fish_pid,
+                            &mut last_status_bytes,
+                        );
+                    } else {
+                        log::info!("walk_dropped reason=repo_missing pwd={}", pwd.display());
+                    }
+                } else {
                     log::info!(
-                        "dirty_dropped reason=stale_generation pwd={}",
-                        pwd.display(),
+                        "walk_dropped reason=stale gen={generation} current_gen={current_generation}",
                     );
-                    continue;
                 }
-                if Some(&pwd) != current_pwd.as_ref() {
-                    log::info!("dirty_dropped reason=stale_pwd pwd={}", pwd.display());
-                    continue;
+
+                // Coalesced requests piled up while we were busy. Kick one
+                // more walk for whatever the current state is now. Async
+                // (no deadline_tx); the result lands via WalkComplete.
+                if walk_pending {
+                    walk_pending = false;
+                    if let Some(pending_pwd) = current_pwd.clone() {
+                        log::info!("walk_pending_kicked gen={current_generation}");
+                        walk_inflight = Some(current_generation);
+                        let _ = work_tx.send(WalkRequest {
+                            generation: current_generation,
+                            pwd: pending_pwd,
+                            deadline_tx: None,
+                        });
+                    }
                 }
-                let Some(repo) = gix::discover(&pwd).ok() else {
-                    log::info!("dirty_dropped reason=repo_missing pwd={}", pwd.display());
-                    continue;
-                };
-                let start = Instant::now();
-                let result_label = result.encoded();
-                let status = compute_status_for_repo(&repo, result);
-                log::info!("dirty_resolved result={result_label}");
-                write_and_signal(
-                    &status_file,
-                    &pwd,
-                    Some(&status),
-                    start.elapsed(),
-                    fish_pid,
-                    &mut last_status_bytes,
-                );
             }
         }
     }
+}
+
+// Decide what to do for a "we want fresh dirty info" trigger:
+//   - If the worker is idle: kick a walk and synchronously wait up to
+//     `deadline` for the result. Return Some(dirty); caller writes status.
+//   - If the worker is busy: record that another walk is wanted (the
+//     in-flight walk's completion handler will kick one more walk) and
+//     return None; caller skips the status write so we don't flicker the
+//     prompt to "?" while there's already a recent real result on file.
+fn maybe_kick_walk(
+    work_tx: &mpsc::Sender<WalkRequest>,
+    walk_inflight: &mut Option<u64>,
+    walk_pending: &mut bool,
+    generation: u64,
+    pwd: PathBuf,
+    deadline: Duration,
+) -> Option<DirtyState> {
+    if walk_inflight.is_some() {
+        log::info!("walk_coalesced gen={generation}");
+        *walk_pending = true;
+        return None;
+    }
+    let (sync_tx, sync_rx) = mpsc::channel();
+    *walk_inflight = Some(generation);
+    let _ = work_tx.send(WalkRequest {
+        generation,
+        pwd,
+        deadline_tx: Some(sync_tx),
+    });
+    Some(sync_rx.recv_timeout(deadline).unwrap_or_else(|_| {
+        log::info!("dirty_deferred deadline_ms={}", deadline.as_millis());
+        DirtyState::Unknown
+    }))
+}
+
+// Swap which repo's `.git/` we watch. Idempotent if `git_dir` hasn't
+// changed since last call.
+fn swap_repo_watch(
+    debouncer: &mut Debouncer<notify::RecommendedWatcher, FileIdMap>,
+    repo: Option<&gix::Repository>,
+    watched_git_dir: &mut Option<PathBuf>,
+) {
+    let new_git_dir = repo.map(|r| r.git_dir().to_path_buf());
+    if new_git_dir == *watched_git_dir {
+        return;
+    }
+    if let Some(old) = watched_git_dir.take() {
+        unwatch_repo(debouncer, &old);
+        log::info!("unwatch git_dir={}", old.display());
+    }
+    if let Some(ref new) = new_git_dir {
+        match watch_repo(debouncer, new) {
+            Ok(()) => {
+                *watched_git_dir = Some(new.clone());
+                log::info!("watch git_dir={}", new.display());
+            }
+            Err(e) => {
+                log::error!("watch_failed git_dir={} err={e}", new.display());
+            }
+        }
+    }
+}
+
+// Persistent worker thread. Pulls one WalkRequest at a time and runs the
+// gix walk. Always reports completion to the main loop (even when
+// deadline_tx received the result first), so the main loop can update its
+// walk_inflight state and kick a pending walk if there is one.
+fn spawn_walk_worker(work_rx: mpsc::Receiver<WalkRequest>, main_tx: mpsc::Sender<Event>) {
+    std::thread::spawn(move || {
+        while let Ok(req) = work_rx.recv() {
+            let WalkRequest {
+                generation,
+                pwd,
+                deadline_tx,
+            } = req;
+            let walk_start = Instant::now();
+            let result = match gix::discover(&pwd).ok() {
+                Some(r) => compute_dirty_unbounded(&r),
+                None => DirtyState::Unknown,
+            };
+            log::info!(
+                "dirty_walk dur_ms={} result={}",
+                walk_start.elapsed().as_millis(),
+                result.encoded(),
+            );
+            // Best-effort sync delivery. May fail if the main loop already
+            // timed out and dropped its rx; that's fine — the main_tx send
+            // below covers the recovery path.
+            if let Some(tx) = deadline_tx {
+                let _ = tx.send(result.clone());
+            }
+            main_tx
+                .send(Event::WalkComplete {
+                    generation,
+                    pwd,
+                    result,
+                })
+                .ok();
+        }
+    });
 }
 
 fn signal_fish(pid: i32) {
@@ -470,59 +608,6 @@ fn compute_upstream(repo: &gix::Repository, head_name: &gix::refs::FullNameRef) 
     UpstreamState::Tracking {
         ahead: count_walk(head_id, upstream_id),
         behind: count_walk(upstream_id, head_id),
-    }
-}
-
-// Spawns the actual dirty computation on a background thread and blocks the
-// main thread for at most `deadline`.
-//
-// If the worker finishes in time, returns its result.
-// If the deadline expires, returns Unknown and lets the worker keep running;
-// when it eventually finishes, it sends an Event::DirtyResolved through
-// `main_tx` so the main loop can re-emit the status. `generation` and `pwd`
-// are echoed back so the receiver can drop stale answers.
-//
-// A short-circuit: if `deadline == ZERO` we skip the work entirely (used by
-// the DirtyResolved handler when re-rendering with an already-computed dirty).
-fn compute_dirty(
-    deadline: Duration,
-    generation: u64,
-    pwd: PathBuf,
-    main_tx: mpsc::Sender<Event>,
-) -> DirtyState {
-    let repo_path = pwd.clone();
-    let (tx, rx) = mpsc::channel::<DirtyState>();
-
-    std::thread::spawn(move || {
-        let walk_start = Instant::now();
-        let result = match gix::discover(&repo_path).ok() {
-            Some(r) => compute_dirty_unbounded(&r),
-            None => DirtyState::Unknown,
-        };
-        log::info!(
-            "dirty_walk dur_ms={} result={}",
-            walk_start.elapsed().as_millis(),
-            result.encoded(),
-        );
-        // Try to deliver synchronously first. If the main thread is no longer
-        // waiting (deadline already passed and rx is dropped), fall back to
-        // the main channel so the deferred result still lands.
-        if tx.send(result.clone()).is_err() {
-            main_tx
-                .send(Event::DirtyResolved {
-                    generation,
-                    pwd,
-                    result,
-                })
-                .ok();
-        }
-    });
-
-    if let Ok(result) = rx.recv_timeout(deadline) {
-        result
-    } else {
-        log::info!("dirty_deferred deadline_ms={}", deadline.as_millis());
-        DirtyState::Unknown
     }
 }
 

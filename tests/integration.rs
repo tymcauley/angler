@@ -731,29 +731,95 @@ fn repeated_identical_requests_skip_after_first_write() {
         h.request(repo.path());
     }
 
-    // Wait for the log to settle: at least 5 status_skip lines should
-    // accumulate, since each request fires the worker but the bytes match.
+    // Wait for the daemon to finish processing all 6 requests. Each one
+    // produces either a status_skip (idempotent re-walk landed on same
+    // bytes) or a walk_coalesced (a walk was already in flight at request
+    // arrival, so this one didn't kick a new walk). Which one wins depends
+    // on whether the previous WalkComplete was processed before the next
+    // Request — that's a race we don't try to control here. We just want
+    // the total to add up and the count of real writes to stay at one.
     let deadline = Instant::now() + Duration::from_secs(2);
     let contents = loop {
         if let Ok(s) = std::fs::read_to_string(&log_path)
-            && s.matches("status_skip").count() >= 5
+            && s.matches("status_skip").count() + s.matches("walk_coalesced").count() >= 5
         {
             break s;
         }
         assert!(
             Instant::now() < deadline,
-            "expected ≥5 status_skip lines; log was:\n{}",
+            "expected ≥5 follow-up events; log was:\n{}",
             std::fs::read_to_string(&log_path).unwrap_or_default(),
         );
         std::thread::sleep(Duration::from_millis(20));
     };
 
-    // Exactly one "status branch=…" write — the first request. The next
-    // five all fall through to status_skip.
+    // Exactly one "status branch=…" write — the first request. Every later
+    // request falls through to status_skip or walk_coalesced.
     let writes = contents.matches("] status branch=").count();
     assert_eq!(
         writes, 1,
         "expected exactly 1 status write, got {writes}; log:\n{contents}",
+    );
+}
+
+#[test]
+fn bursty_requests_coalesce_into_few_walks() {
+    // Send a burst of 20 identical requests. With coalescing we expect
+    // many fewer walks than 20 — only the first request kicks one, and
+    // each subsequent walk only fires if a request arrived while the
+    // previous walk was running (and pending kicks fold many requests
+    // into one walk). The exact count is timing-dependent (faster walks
+    // mean fewer coalesces), but it must be strictly less than the
+    // request count for any plausible CI machine.
+    let log_dir = tempfile::tempdir().unwrap();
+    let log_path = log_dir.path().join("daemon.log");
+    let h = Harness::with_args(&["--log-file", log_path.to_str().unwrap()]);
+    let repo = make_clean_repo();
+
+    h.request(repo.path());
+    let _ = h.wait_for(repo.path());
+
+    const N: usize = 20;
+    for _ in 0..N {
+        h.request(repo.path());
+    }
+
+    // Wait for the burst to be fully processed. We're done when the
+    // count of (status_skip + walk_coalesced) entries from the burst
+    // covers all N follow-up requests.
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let contents = loop {
+        if let Ok(s) = std::fs::read_to_string(&log_path)
+            && s.matches("status_skip").count() + s.matches("walk_coalesced").count() >= N
+        {
+            break s;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "burst didn't settle; log:\n{}",
+            std::fs::read_to_string(&log_path).unwrap_or_default(),
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    };
+
+    let walks = contents.matches("dirty_walk dur_ms=").count();
+    let coalesced = contents.matches("walk_coalesced").count();
+
+    // 21 requests total (1 setup + 20 burst). Without coalescing we'd
+    // see 21 walks. With coalescing we expect substantially fewer.
+    assert!(
+        walks < N + 1,
+        "expected < {} walks for {} requests; got walks={walks} coalesced={coalesced}; log:\n{contents}",
+        N + 1,
+        N + 1,
+    );
+    // And at least one request must have actually been coalesced — if
+    // every request raced ahead of WalkComplete, walks would equal
+    // requests and the assertion above would fail; this one ensures the
+    // coalesce path itself was exercised.
+    assert!(
+        coalesced >= 1,
+        "expected ≥1 walk_coalesced; got {coalesced}; log:\n{contents}",
     );
 }
 
