@@ -75,6 +75,12 @@ set -q _fp_cmd_duration_threshold_ms; or set -g _fp_cmd_duration_threshold_ms 10
 # Daemon tuning.
 set -q _fp_dirty_deadline_ms; or set -g _fp_dirty_deadline_ms 200
 
+# Optional log file for the daemon (off by default). Set this in config.fish
+# to enable; the path may include $fish_pid for a per-shell log, or be a
+# fixed path that all shells share (each line is prefixed with the daemon's
+# PID for disambiguation).
+set -q _fp_log_file; or set -g _fp_log_file ""
+
 # ---- runtime state and daemon spawn ----
 status is-interactive; or exit 0
 command -q fish-prompt-daemon; or exit 0

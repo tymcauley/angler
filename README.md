@@ -149,10 +149,32 @@ Daemon tuning:
 ```fish
 set -g _fp_dirty_deadline_ms 200   # how long to wait synchronously before
                                    # falling back to a deferred result
+set -g _fp_log_file ""             # path to the daemon log file; empty
+                                   # disables logging entirely (default)
 ```
 
 Setting any of these in `config.fish` and running `exec fish` is enough to apply.
 Per-session overrides also work — just `set -g` in the running shell and the next prompt picks them up.
+
+## Debugging
+
+If the prompt feels off — slow, stale, missing git info — point the daemon at a log file:
+
+```fish
+set -g _fp_log_file ~/.cache/fish-prompt.log
+exec fish
+```
+
+Each line is `<rfc3339-timestamp> [<daemon-pid>] <event> key=value …`.
+Events include `start`, `request`, `watch` / `unwatch`, `watcher_fire`, `status` (with `dur_ms` latency), `dirty_deferred` / `dirty_resolved` (deadline path), and `parent_died` (watchdog exit).
+
+```
+2026-05-04T18:26:40.659Z [4592] request pwd=/Users/tynan/code/fish-prompt
+2026-05-04T18:26:40.661Z [4592] watch git_dir=/Users/tynan/code/fish-prompt/.git
+2026-05-04T18:26:40.663Z [4592] status branch=main dirty=*u ahead=0 behind=0 upstream= stash=0 op= dur_ms=3
+```
+
+You can use a fixed path across all shells (each daemon prefixes its lines with its PID) or per-shell logs via `set -g _fp_log_file /tmp/fp-$fish_pid.log`.
 
 ## Uninstall
 

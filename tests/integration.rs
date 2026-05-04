@@ -641,6 +641,77 @@ fn fsmonitor_picks_up_branch_change_without_new_request() {
 }
 
 #[test]
+fn log_file_records_lifecycle_events() {
+    // Spawn with --log-file and a simple request flow; verify the resulting
+    // file contains the major events (start, request, status) and that each
+    // line is prefixed with the daemon's PID.
+    let log_dir = tempfile::tempdir().unwrap();
+    let log_path = log_dir.path().join("daemon.log");
+    let h = Harness::with_args(&["--log-file", log_path.to_str().unwrap()]);
+    let repo = make_clean_repo();
+    h.request(repo.path());
+    let _ = h.wait_for(repo.path());
+
+    // Logger writes happen on the same thread as the event handler, but the
+    // OS may not flush immediately. A short poll absorbs that.
+    let deadline = Instant::now() + Duration::from_secs(1);
+    let contents = loop {
+        if let Ok(s) = std::fs::read_to_string(&log_path) {
+            if s.contains("status ") {
+                break s;
+            }
+        }
+        if Instant::now() >= deadline {
+            panic!("log file never grew to include 'status': {log_path:?}");
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+
+    assert!(
+        contents.contains("start "),
+        "expected 'start' event in log, got:\n{contents}",
+    );
+    assert!(
+        contents.contains("request "),
+        "expected 'request' event in log, got:\n{contents}",
+    );
+    assert!(
+        contents.contains("branch=main"),
+        "expected status entry to include the branch, got:\n{contents}",
+    );
+
+    // Every line must have the form `<rfc3339> [<pid>] <message>`. Spot-check
+    // one non-empty line.
+    let first_line = contents.lines().find(|l| !l.is_empty()).unwrap();
+    assert!(
+        first_line.contains(" ["),
+        "log line missing PID bracket: {first_line:?}",
+    );
+}
+
+#[test]
+fn no_log_file_created_when_flag_omitted() {
+    // The harness's tempdir holds the FIFO and status file; no daemon log
+    // should appear there (or anywhere we control) when --log-file isn't
+    // passed.
+    let h = Harness::new();
+    let repo = make_clean_repo();
+    h.request(repo.path());
+    let _ = h.wait_for(repo.path());
+
+    let names: Vec<String> = std::fs::read_dir(h._state.path())
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().to_string())
+        .collect();
+
+    assert!(
+        !names.iter().any(|n| n.ends_with(".log")),
+        "no .log file expected in harness dir, got {names:?}",
+    );
+}
+
+#[test]
 fn multiple_requests_in_sequence() {
     let h = Harness::new();
     let clean = make_clean_repo();

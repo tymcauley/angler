@@ -1,8 +1,10 @@
+use std::fs::File;
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
-use std::time::Duration;
+use std::sync::Mutex;
+use std::time::{Duration, Instant, SystemTime};
 
 use notify::RecursiveMode;
 use notify_debouncer_full::{new_debouncer, DebounceEventResult, Debouncer, FileIdMap};
@@ -28,6 +30,7 @@ fn main() {
     let mut fish_pid: Option<i32> = None;
     let mut status_file: Option<PathBuf> = None;
     let mut request_fifo: Option<PathBuf> = None;
+    let mut log_file: Option<PathBuf> = None;
     let mut dirty_deadline = DEFAULT_DIRTY_DEADLINE;
 
     let args: Vec<String> = std::env::args().collect();
@@ -46,6 +49,10 @@ fn main() {
                 request_fifo = args.get(i + 1).map(PathBuf::from);
                 i += 2;
             }
+            "--log-file" => {
+                log_file = args.get(i + 1).map(PathBuf::from);
+                i += 2;
+            }
             "--dirty-deadline-ms" => {
                 if let Some(ms) = args.get(i + 1).and_then(|s| s.parse().ok()) {
                     dirty_deadline = Duration::from_millis(ms);
@@ -62,6 +69,22 @@ fn main() {
     let fish_pid = fish_pid.expect("--fish-pid required");
     let status_file = status_file.expect("--status-file required");
     let request_fifo = request_fifo.expect("--request-fifo required");
+
+    if let Some(path) = log_file.as_ref() {
+        if let Err(e) = install_logger(path) {
+            eprintln!(
+                "fish-prompt-daemon: --log-file open failed for {}: {e}",
+                path.display(),
+            );
+        }
+    }
+
+    log::info!(
+        "start fish_pid={fish_pid} status_file={} request_fifo={} dirty_deadline_ms={}",
+        status_file.display(),
+        request_fifo.display(),
+        dirty_deadline.as_millis(),
+    );
 
     spawn_watchdog();
 
@@ -99,6 +122,8 @@ fn main() {
         match event {
             Event::Eof => break,
             Event::Request(path) => {
+                let start = Instant::now();
+                log::info!("request pwd={}", path.display());
                 current_pwd = Some(path.clone());
                 current_generation += 1;
                 let repo = gix::discover(&path).ok();
@@ -112,10 +137,17 @@ fn main() {
                 if new_git_dir != watched_git_dir {
                     if let Some(old) = watched_git_dir.take() {
                         unwatch_repo(&mut debouncer, &old);
+                        log::info!("unwatch git_dir={}", old.display());
                     }
                     if let Some(ref new) = new_git_dir {
-                        if watch_repo(&mut debouncer, new).is_ok() {
-                            watched_git_dir = Some(new.clone());
+                        match watch_repo(&mut debouncer, new) {
+                            Ok(()) => {
+                                watched_git_dir = Some(new.clone());
+                                log::info!("watch git_dir={}", new.display());
+                            }
+                            Err(e) => {
+                                log::error!("watch_failed git_dir={} err={e}", new.display());
+                            }
                         }
                     }
                 }
@@ -126,18 +158,22 @@ fn main() {
                     compute_status_for_repo(r, dirty)
                 });
                 let _ = write_status_file(&status_file, &path, status.as_ref());
+                log_status_event(status.as_ref(), start.elapsed());
                 signal_fish(fish_pid);
             }
             Event::WatcherFired => {
                 let Some(pwd) = current_pwd.clone() else {
                     continue;
                 };
+                let start = Instant::now();
+                log::info!("watcher_fire pwd={}", pwd.display());
                 let status = gix::discover(&pwd).ok().map(|r| {
                     let dirty =
                         compute_dirty(dirty_deadline, current_generation, pwd.clone(), tx.clone());
                     compute_status_for_repo(&r, dirty)
                 });
                 let _ = write_status_file(&status_file, &pwd, status.as_ref());
+                log_status_event(status.as_ref(), start.elapsed());
                 signal_fish(fish_pid);
             }
             Event::DirtyResolved {
@@ -148,16 +184,26 @@ fn main() {
                 // Drop stale results: the user has moved on, or the request
                 // we ran for has been superseded.
                 if generation != current_generation {
+                    log::info!(
+                        "dirty_dropped reason=stale_generation pwd={}",
+                        pwd.display(),
+                    );
                     continue;
                 }
                 if Some(&pwd) != current_pwd.as_ref() {
+                    log::info!("dirty_dropped reason=stale_pwd pwd={}", pwd.display());
                     continue;
                 }
                 let Some(repo) = gix::discover(&pwd).ok() else {
+                    log::info!("dirty_dropped reason=repo_missing pwd={}", pwd.display());
                     continue;
                 };
+                let start = Instant::now();
+                let result_label = result.encoded();
                 let status = compute_status_for_repo(&repo, result);
                 let _ = write_status_file(&status_file, &pwd, Some(&status));
+                log::info!("dirty_resolved result={result_label}");
+                log_status_event(Some(&status), start.elapsed());
                 signal_fish(fish_pid);
             }
         }
@@ -179,6 +225,7 @@ fn spawn_fifo_reader(fifo_path: PathBuf, tx: mpsc::Sender<Event>) {
         {
             Ok(f) => f,
             Err(e) => {
+                log::error!("fifo_open_failed err={e}");
                 eprintln!("fish-prompt-daemon: open fifo: {e}");
                 tx.send(Event::Eof).ok();
                 return;
@@ -207,6 +254,7 @@ fn spawn_watchdog() {
         // getppid() returns a different value than at startup.
         let current = unsafe { libc::getppid() };
         if current != initial_ppid {
+            log::info!("parent_died initial_ppid={initial_ppid} current_ppid={current}");
             std::process::exit(0);
         }
     });
@@ -443,7 +491,10 @@ fn compute_dirty(
 
     match rx.recv_timeout(deadline) {
         Ok(result) => result,
-        Err(_) => DirtyState::Unknown,
+        Err(_) => {
+            log::info!("dirty_deferred deadline_ms={}", deadline.as_millis());
+            DirtyState::Unknown
+        }
     }
 }
 
@@ -537,5 +588,74 @@ fn write_status_file(
         }
     }
     std::fs::rename(&tmp, path)?;
+    Ok(())
+}
+
+// One-line summary of the most recent status write. Always called right
+// after write_status_file so dur_ms reflects the wall clock from event
+// arrival to status-file rename.
+fn log_status_event(status: Option<&Status>, elapsed: Duration) {
+    let dur_ms = elapsed.as_millis();
+    match status {
+        Some(s) => {
+            let (ahead, behind, upstream) = match s.upstream {
+                UpstreamState::Tracking { ahead, behind } => (ahead, behind, ""),
+                UpstreamState::Gone => (0, 0, "gone"),
+                UpstreamState::None => (0, 0, ""),
+            };
+            log::info!(
+                "status branch={} dirty={} ahead={ahead} behind={behind} upstream={upstream} stash={} op={} dur_ms={dur_ms}",
+                s.branch,
+                s.dirty.encoded(),
+                s.stash,
+                s.operation.unwrap_or(""),
+            );
+        }
+        None => log::info!("status no_repo dur_ms={dur_ms}"),
+    }
+}
+
+// Custom log::Log backend so we can write to a daemon-private file with our
+// own format, rather than pulling in a backend crate that imposes its own.
+// Format: "<rfc3339> [<pid>] <event-from-args>". Append-mode + a Mutex around
+// the file makes concurrent calls safe; with O_APPEND the kernel guarantees
+// a single write_all is atomic up to PIPE_BUF, but locking also prevents
+// future multi-write events from interleaving.
+struct FileLogger {
+    file: Mutex<File>,
+    pid: u32,
+}
+
+impl log::Log for FileLogger {
+    fn enabled(&self, metadata: &log::Metadata) -> bool {
+        metadata.level() <= log::Level::Info
+    }
+
+    fn log(&self, record: &log::Record) {
+        if !self.enabled(record.metadata()) {
+            return;
+        }
+        let ts = humantime::format_rfc3339_millis(SystemTime::now());
+        let line = format!("{ts} [{}] {}\n", self.pid, record.args());
+        if let Ok(mut f) = self.file.lock() {
+            let _ = f.write_all(line.as_bytes());
+        }
+    }
+
+    fn flush(&self) {
+        if let Ok(mut f) = self.file.lock() {
+            let _ = f.flush();
+        }
+    }
+}
+
+fn install_logger(path: &Path) -> std::io::Result<()> {
+    let file = File::options().create(true).append(true).open(path)?;
+    log::set_boxed_logger(Box::new(FileLogger {
+        file: Mutex::new(file),
+        pid: std::process::id(),
+    }))
+    .expect("logger should only be set once per process");
+    log::set_max_level(log::LevelFilter::Info);
     Ok(())
 }
