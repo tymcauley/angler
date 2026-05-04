@@ -2,12 +2,12 @@ use std::fs::File;
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
-use std::sync::mpsc;
 use std::sync::Mutex;
+use std::sync::mpsc;
 use std::time::{Duration, Instant, SystemTime};
 
 use notify::RecursiveMode;
-use notify_debouncer_full::{new_debouncer, DebounceEventResult, Debouncer, FileIdMap};
+use notify_debouncer_full::{DebounceEventResult, Debouncer, FileIdMap, new_debouncer};
 
 const DEFAULT_DIRTY_DEADLINE: Duration = Duration::from_millis(200);
 const DEBOUNCE: Duration = Duration::from_millis(150);
@@ -70,13 +70,13 @@ fn main() {
     let status_file = status_file.expect("--status-file required");
     let request_fifo = request_fifo.expect("--request-fifo required");
 
-    if let Some(path) = log_file.as_ref() {
-        if let Err(e) = install_logger(path) {
-            eprintln!(
-                "fish-prompt-daemon: --log-file open failed for {}: {e}",
-                path.display(),
-            );
-        }
+    if let Some(path) = log_file.as_ref()
+        && let Err(e) = install_logger(path)
+    {
+        eprintln!(
+            "fish-prompt-daemon: --log-file open failed for {}: {e}",
+            path.display(),
+        );
     }
 
     log::info!(
@@ -98,10 +98,10 @@ fn main() {
             // We don't care which path fired — main thread re-computes for the
             // current PWD. (See the path-match guard in fish_prompt for why
             // this is safe even if a non-current repo's events trigger us.)
-            if let Ok(events) = result {
-                if !events.is_empty() {
-                    watch_tx.send(Event::WatcherFired).ok();
-                }
+            if let Ok(events) = result
+                && !events.is_empty()
+            {
+                watch_tx.send(Event::WatcherFired).ok();
             }
         })
         .expect("create debouncer");
@@ -248,14 +248,16 @@ fn spawn_fifo_reader(fifo_path: PathBuf, tx: mpsc::Sender<Event>) {
 
 fn spawn_watchdog() {
     let initial_ppid = unsafe { libc::getppid() };
-    std::thread::spawn(move || loop {
-        std::thread::sleep(std::time::Duration::from_millis(500));
-        // When fish dies, this process gets reparented to init/launchd, so
-        // getppid() returns a different value than at startup.
-        let current = unsafe { libc::getppid() };
-        if current != initial_ppid {
-            log::info!("parent_died initial_ppid={initial_ppid} current_ppid={current}");
-            std::process::exit(0);
+    std::thread::spawn(move || {
+        loop {
+            std::thread::sleep(std::time::Duration::from_millis(500));
+            // When fish dies, this process gets reparented to init/launchd, so
+            // getppid() returns a different value than at startup.
+            let current = unsafe { libc::getppid() };
+            if current != initial_ppid {
+                log::info!("parent_died initial_ppid={initial_ppid} current_ppid={current}");
+                std::process::exit(0);
+            }
         }
     });
 }
@@ -526,9 +528,9 @@ fn compute_dirty_unbounded(repo: &gix::Repository) -> DirtyState {
 }
 
 fn classify_item(item: gix::status::Item, flags: &mut DirtyFlags) {
+    use gix::status::Item;
     use gix::status::index_worktree::Item as IWItem;
     use gix::status::plumbing::index_as_worktree::EntryStatus;
-    use gix::status::Item;
 
     match item {
         Item::TreeIndex(_) => flags.staged = true,

@@ -88,10 +88,10 @@ impl Harness {
     fn wait_for(&self, expected_path: &Path) -> Fields {
         let deadline = Instant::now() + RESPONSE_TIMEOUT;
         loop {
-            if let Ok(fields) = read_status(&self.status_file) {
-                if fields.path.as_os_str() == expected_path.as_os_str() {
-                    return fields;
-                }
+            if let Ok(fields) = read_status(&self.status_file)
+                && fields.path.as_os_str() == expected_path.as_os_str()
+            {
+                return fields;
             }
             assert!(
                 Instant::now() < deadline,
@@ -113,10 +113,10 @@ impl Harness {
     ) -> Option<Fields> {
         let deadline = Instant::now() + timeout;
         loop {
-            if let Ok(fields) = read_status(&self.status_file) {
-                if predicate(&fields) {
-                    return Some(fields);
-                }
+            if let Ok(fields) = read_status(&self.status_file)
+                && predicate(&fields)
+            {
+                return Some(fields);
             }
             if Instant::now() >= deadline {
                 return None;
@@ -655,10 +655,10 @@ fn log_file_records_lifecycle_events() {
     // OS may not flush immediately. A short poll absorbs that.
     let deadline = Instant::now() + Duration::from_secs(1);
     let contents = loop {
-        if let Ok(s) = std::fs::read_to_string(&log_path) {
-            if s.contains("status ") {
-                break s;
-            }
+        if let Ok(s) = std::fs::read_to_string(&log_path)
+            && s.contains("status ")
+        {
+            break s;
         }
         assert!(
             Instant::now() < deadline,
