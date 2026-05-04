@@ -144,17 +144,21 @@ set -g _fp_color_vi_replace yellow  --reverse --bold
 
 Drop `--reverse` from the colors for plain colored letters; set the symbols to `'[I]'`/`'[N]'`/etc. for the older bracket style.
 
-Daemon tuning:
+Daemon tuning (passed as flags when the daemon spawns):
 
 ```fish
-set -g _fp_dirty_deadline_ms 200   # how long to wait synchronously before
+set -U _fp_dirty_deadline_ms 200   # how long to wait synchronously before
                                    # falling back to a deferred result
-set -g _fp_log_file ""             # path to the daemon log file; empty
+set -U _fp_log_file ""             # path to the daemon log file; empty
                                    # disables logging entirely (default)
 ```
 
-Setting any of these in `config.fish` and running `exec fish` is enough to apply.
-Per-session overrides also work — just `set -g` in the running shell and the next prompt picks them up.
+These two need to be **universal** (`set -U`), not global, because they're read inside our `conf.d/` snippet to build the daemon's argv — and `conf.d/` runs *before* `config.fish`.
+A `set -g` in `config.fish` is read too late: the daemon has already been spawned by the time it runs.
+Universals are loaded by fish before any startup file, so they're visible to the spawn helper.
+
+For all the other knobs above (symbols, colors, toggles), `set -g` in `config.fish` is fine — they're read at prompt-render time, well after `config.fish` has run.
+Per-session overrides via `set -g` in the running shell also work for those.
 
 ## Debugging
 
