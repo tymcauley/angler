@@ -56,6 +56,11 @@ impl Harness {
             request_fifo.to_str().unwrap(),
         ]);
         cmd.args(extra);
+        // Hermetic from the test runner's user git config — without this,
+        // settings like diff.ignoreSubmodules bleed in and silently change
+        // what gix reports.
+        cmd.env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_SYSTEM", "/dev/null");
         let daemon = cmd.spawn().expect("spawn daemon");
 
         Self {
@@ -148,14 +153,15 @@ struct Fields {
     operation: String,
     upstream: String,
     stash: String,
+    submodules: String,
 }
 
 fn read_status(p: &Path) -> std::io::Result<Fields> {
     let mut buf = Vec::new();
     File::open(p)?.read_to_end(&mut buf)?;
     let parts: Vec<&[u8]> = buf.split(|&b| b == 0).collect();
-    if parts.len() < 8 {
-        return Err(std::io::Error::other("fewer than 8 fields"));
+    if parts.len() < 9 {
+        return Err(std::io::Error::other("fewer than 9 fields"));
     }
     // Path can contain non-UTF-8 bytes — keep them. Other fields are ASCII
     // by daemon contract, so lossy UTF-8 is fine.
@@ -169,6 +175,7 @@ fn read_status(p: &Path) -> std::io::Result<Fields> {
         operation: s(parts[5]),
         upstream: s(parts[6]),
         stash: s(parts[7]),
+        submodules: s(parts[8]),
     })
 }
 
@@ -338,6 +345,43 @@ fn make_detached_head_repo() -> TempDir {
 
 fn no_repo_dir() -> TempDir {
     tempfile::tempdir().unwrap()
+}
+
+// Build a parent repo containing a submodule whose worktree has been
+// dirtied. The parent itself has no other uncommitted changes — the only
+// possible dirty signal is the submodule. Returns both temp dirs so callers
+// keep them alive for the lifetime of the test.
+fn make_repo_with_dirty_submodule() -> (TempDir, TempDir) {
+    let sub = tempfile::tempdir().unwrap();
+    git(sub.path(), &["init", "-q", "-b", "main"]);
+    std::fs::write(sub.path().join("a.txt"), b"sub\n").unwrap();
+    git(sub.path(), &["add", "a.txt"]);
+    git(sub.path(), &["commit", "-q", "-m", "init"]);
+
+    let parent = tempfile::tempdir().unwrap();
+    git(parent.path(), &["init", "-q", "-b", "main"]);
+    std::fs::write(parent.path().join("a.txt"), b"parent\n").unwrap();
+    git(parent.path(), &["add", "a.txt"]);
+    git(parent.path(), &["commit", "-q", "-m", "init"]);
+
+    // Local file:// URLs require protocol.file.allow=always on modern git.
+    git(
+        parent.path(),
+        &[
+            "-c",
+            "protocol.file.allow=always",
+            "submodule",
+            "add",
+            sub.path().to_str().unwrap(),
+            "sub",
+        ],
+    );
+    git(parent.path(), &["commit", "-q", "-m", "add submodule"]);
+
+    // Modify a tracked file inside the submodule's worktree.
+    std::fs::write(parent.path().join("sub/a.txt"), b"changed\n").unwrap();
+
+    (parent, sub)
 }
 
 fn make_repo_with_stashes(n: u32) -> TempDir {
@@ -828,6 +872,29 @@ fn bursty_requests_coalesce_into_few_walks() {
         coalesced >= 1,
         "expected ≥1 walk_coalesced; got {coalesced}; log:\n{contents}",
     );
+}
+
+#[test]
+fn submodule_changes_surface_separately_from_dirty() {
+    // The parent has no uncommitted changes of its own; only the submodule
+    // worktree is dirty. We expect the parent's `dirty` to stay clean
+    // (submodule changes don't bleed into `*`) while `submodules` reports
+    // the count.
+    let h = Harness::new();
+    let (parent, _sub) = make_repo_with_dirty_submodule();
+    h.request(parent.path());
+    let f = h.wait_for(parent.path());
+    assert_eq!(f.dirty, "0");
+    assert_eq!(f.submodules, "1");
+}
+
+#[test]
+fn no_submodules_reports_zero() {
+    let h = Harness::new();
+    let repo = make_clean_repo();
+    h.request(repo.path());
+    let f = h.wait_for(repo.path());
+    assert_eq!(f.submodules, "0");
 }
 
 #[test]

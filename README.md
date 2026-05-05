@@ -23,6 +23,7 @@ Line 1 left:
 - Dirty markers: red `*` modified, green `+` staged, yellow `?` untracked, red bold `!` conflict
 - **yellow** `?` if the dirty check couldn't finish within the deadline (default 200ms — you'll see it on huge repos with a cold disk cache; resolves on its own once the background scan finishes)
 - **blue** `≡N` for stash count (hidden if zero)
+- **yellow** `sN` for the count of submodules with changes (hidden if zero — granularity follows your `diff.ignoreSubmodules` config; an unset config defaults to counting both HEAD-diffs and worktree-dirty submodules)
 - **magenta** `(rebasing)` / `(merging)` / etc. when an operation is in progress
 - **yellow** command duration (only for commands over `_fp_cmd_duration_threshold_ms`, default 1s; always shown when applicable, regardless of terminal width)
 - **red bold** ` | N` after the duration if the last command exited non-zero — the `|` shares the exit code's red bold so the two read as one unit. Always shown when applicable, regardless of terminal width.
@@ -86,6 +87,7 @@ set -g _fp_symbol_ahead     '↑'   # commits ahead of upstream
 set -g _fp_symbol_behind    '↓'   # commits behind upstream
 set -g _fp_symbol_gone      '↯'   # red, upstream branch is gone
 set -g _fp_symbol_stash     '≡'   # blue, stash count
+set -g _fp_symbol_submodule 's'   # yellow, count of submodules with changes
 set -g _fp_symbol_prompt    '❯'
 ```
 
@@ -108,6 +110,7 @@ Toggles (1 to show, anything else to hide):
 ```fish
 set -g _fp_show_ahead_behind 1
 set -g _fp_show_stash        1
+set -g _fp_show_submodule    1
 set -g _fp_show_operation    1
 set -g _fp_show_exit_code    1
 set -g _fp_show_time         1
@@ -208,8 +211,8 @@ Daemon cleanup is automatic via a `getppid()` watchdog — no orphans on shell e
 If the daemon dies (panic, OOM, manual kill), fish respawns it before the next request rather than hanging on the FIFO write or rendering an empty git block forever.
 
 Both sides of the wire are NUL-delimited (matching `find -print0` framing — robust against paths with embedded newlines or non-UTF-8 bytes).
-The request is a single NUL-terminated path; the response is eight NUL-terminated fields: `<requested-path>\0<branch>\0<ahead>\0<behind>\0<dirty>\0<operation>\0<upstream>\0<stash>\0`.
-`branch` is empty when the path isn't a git repo; `dirty` is `0` for clean, `?` for unknown, or some combination of `+` (staged), `*` (modified), `u` (untracked), `!` (conflict); `operation` is a label like `rebasing`/`merging` or empty; `upstream` is `gone` or empty; `stash` is the stash count.
+The request is a single NUL-terminated path; the response is nine NUL-terminated fields: `<requested-path>\0<branch>\0<ahead>\0<behind>\0<dirty>\0<operation>\0<upstream>\0<stash>\0<submodules>\0`.
+`branch` is empty when the path isn't a git repo; `dirty` is `0` for clean, `?` for unknown, or some combination of `+` (staged), `*` (modified), `u` (untracked), `!` (conflict); `operation` is a label like `rebasing`/`merging` or empty; `upstream` is `gone` or empty; `stash` is the stash count; `submodules` is the count of submodules with changes (subject to the user's `diff.ignoreSubmodules`).
 `fish_prompt` ignores responses whose path doesn't match the current `$PWD`, so stale fires during rapid `cd` are harmless.
 
 ## Development

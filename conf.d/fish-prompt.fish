@@ -12,6 +12,7 @@ set -q _fp_symbol_ahead;     or set -g _fp_symbol_ahead     '↑'
 set -q _fp_symbol_behind;    or set -g _fp_symbol_behind    '↓'
 set -q _fp_symbol_gone;      or set -g _fp_symbol_gone      '↯'
 set -q _fp_symbol_stash;     or set -g _fp_symbol_stash     '≡'
+set -q _fp_symbol_submodule; or set -g _fp_symbol_submodule 's'
 set -q _fp_symbol_prompt;    or set -g _fp_symbol_prompt    '❯'
 
 # Vi mode indicator strings. Rendered by fish_mode_prompt (left of line 1)
@@ -47,6 +48,7 @@ set -q _fp_color_ahead;     or set -g _fp_color_ahead     yellow --bold
 set -q _fp_color_behind;    or set -g _fp_color_behind    yellow --bold
 set -q _fp_color_gone;      or set -g _fp_color_gone      red --bold
 set -q _fp_color_stash;     or set -g _fp_color_stash     blue --bold
+set -q _fp_color_submodule; or set -g _fp_color_submodule yellow --bold
 set -q _fp_color_exit_code; or set -g _fp_color_exit_code red --bold
 set -q _fp_color_time;      or set -g _fp_color_time      brblack
 set -q _fp_color_duration;  or set -g _fp_color_duration  brblack
@@ -62,6 +64,7 @@ set -q _fp_color_vi_replace; or set -g _fp_color_vi_replace yellow --reverse --b
 # Toggles (1 = show, anything else = hide).
 set -q _fp_show_ahead_behind;       or set -g _fp_show_ahead_behind       1
 set -q _fp_show_stash;              or set -g _fp_show_stash              1
+set -q _fp_show_submodule;          or set -g _fp_show_submodule          1
 set -q _fp_show_operation;          or set -g _fp_show_operation          1
 set -q _fp_show_exit_code;          or set -g _fp_show_exit_code          1
 set -q _fp_show_time;               or set -g _fp_show_time               1

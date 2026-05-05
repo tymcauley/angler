@@ -21,7 +21,7 @@ enum Event {
     WalkComplete {
         generation: u64,
         pwd: PathBuf,
-        result: DirtyState,
+        result: WalkResult,
     },
     Eof,
 }
@@ -34,7 +34,17 @@ enum Event {
 struct WalkRequest {
     generation: u64,
     pwd: PathBuf,
-    deadline_tx: Option<mpsc::Sender<DirtyState>>,
+    deadline_tx: Option<mpsc::Sender<WalkResult>>,
+}
+
+#[derive(Clone)]
+struct WalkResult {
+    dirty: DirtyState,
+    /// Count of submodules gix reports any change for, after honoring the
+    /// user's `diff.ignoreSubmodules` config. Independent of `dirty` so a
+    /// repo with clean files but a HEAD-moved submodule reports `0` for
+    /// dirty and `1` here.
+    submodules: u32,
 }
 
 fn main() {
@@ -226,8 +236,11 @@ fn main() {
                 let still_current =
                     generation == current_generation && Some(&pwd) == current_pwd.as_ref();
                 if still_current {
-                    let result_label = result.encoded();
-                    log::info!("walk_resolved result={result_label}");
+                    log::info!(
+                        "walk_resolved result={} submodules={}",
+                        result.dirty.encoded(),
+                        result.submodules,
+                    );
                     if let Ok(repo) = gix::discover(&pwd) {
                         let start = Instant::now();
                         let status = compute_status_for_repo(&repo, result);
@@ -282,7 +295,7 @@ fn maybe_kick_walk(
     generation: u64,
     pwd: PathBuf,
     deadline: Duration,
-) -> Option<DirtyState> {
+) -> Option<WalkResult> {
     if walk_inflight.is_some() {
         log::info!("walk_coalesced gen={generation}");
         *walk_pending = true;
@@ -297,7 +310,10 @@ fn maybe_kick_walk(
     });
     Some(sync_rx.recv_timeout(deadline).unwrap_or_else(|_| {
         log::info!("dirty_deferred deadline_ms={}", deadline.as_millis());
-        DirtyState::Unknown
+        WalkResult {
+            dirty: DirtyState::Unknown,
+            submodules: 0,
+        }
     }))
 }
 
@@ -344,12 +360,16 @@ fn spawn_walk_worker(work_rx: mpsc::Receiver<WalkRequest>, main_tx: mpsc::Sender
             let walk_start = Instant::now();
             let result = match gix::discover(&pwd).ok() {
                 Some(r) => compute_dirty_unbounded(&r),
-                None => DirtyState::Unknown,
+                None => WalkResult {
+                    dirty: DirtyState::Unknown,
+                    submodules: 0,
+                },
             };
             log::info!(
-                "dirty_walk dur_ms={} result={}",
+                "dirty_walk dur_ms={} result={} submodules={}",
                 walk_start.elapsed().as_millis(),
-                result.encoded(),
+                result.dirty.encoded(),
+                result.submodules,
             );
             // Best-effort sync delivery. May fail if the main loop already
             // timed out and dropped its rx; that's fine — the main_tx send
@@ -465,6 +485,7 @@ struct Status {
     dirty: DirtyState,
     operation: Option<&'static str>,
     stash: u32,
+    submodules: u32,
 }
 
 enum UpstreamState {
@@ -493,9 +514,6 @@ struct DirtyFlags {
 }
 
 impl DirtyFlags {
-    fn is_full(self) -> bool {
-        self.staged && self.modified && self.untracked && self.conflict
-    }
     fn any(self) -> bool {
         self.staged || self.modified || self.untracked || self.conflict
     }
@@ -531,7 +549,7 @@ impl DirtyState {
     }
 }
 
-fn compute_status_for_repo(repo: &gix::Repository, dirty: DirtyState) -> Status {
+fn compute_status_for_repo(repo: &gix::Repository, walk: WalkResult) -> Status {
     let head_name = repo.head_name().ok().flatten();
     let branch = match &head_name {
         Some(name) => name.shorten().to_string(),
@@ -548,9 +566,10 @@ fn compute_status_for_repo(repo: &gix::Repository, dirty: DirtyState) -> Status 
     Status {
         branch,
         upstream,
-        dirty,
+        dirty: walk.dirty,
         operation: detect_operation(repo.git_dir()),
         stash: count_stashes(repo.git_dir()),
+        submodules: walk.submodules,
     }
 }
 
@@ -628,41 +647,48 @@ fn compute_upstream(repo: &gix::Repository, head_name: &gix::refs::FullNameRef) 
 }
 
 // Iterates gix's parallel status engine without a deadline-driven interrupt.
-// Drains the iterator (or short-circuits when all four flags are observed)
-// and returns Clean / Dirty(flags) / Unknown (only on gix errors).
-fn compute_dirty_unbounded(repo: &gix::Repository) -> DirtyState {
-    let Ok(platform) = repo.status(gix::progress::Discard) else {
-        return DirtyState::Unknown;
+// Submodule status is honored at the level the user's `diff.ignoreSubmodules`
+// config admits; submodule changes don't set the dirty flags but increment
+// `submodules` so they can render with their own indicator.
+fn compute_dirty_unbounded(repo: &gix::Repository) -> WalkResult {
+    let unknown = || WalkResult {
+        dirty: DirtyState::Unknown,
+        submodules: 0,
     };
-
+    let Ok(platform) = repo.status(gix::progress::Discard) else {
+        return unknown();
+    };
     let Ok(iter) = platform.into_iter(None) else {
-        return DirtyState::Unknown;
+        return unknown();
     };
 
     let mut flags = DirtyFlags::default();
+    let mut submodules: u32 = 0;
     for item in iter.flatten() {
-        classify_item(item, &mut flags);
-        if flags.is_full() {
-            break;
-        }
+        classify_item(item, &mut flags, &mut submodules);
     }
 
-    if flags.any() {
+    let dirty = if flags.any() {
         DirtyState::Dirty(flags)
     } else {
         DirtyState::Clean
-    }
+    };
+    WalkResult { dirty, submodules }
 }
 
-fn classify_item(item: gix::status::Item, flags: &mut DirtyFlags) {
+fn classify_item(item: gix::status::Item, flags: &mut DirtyFlags, submodules: &mut u32) {
     use gix::status::Item;
     use gix::status::index_worktree::Item as IWItem;
+    use gix::status::plumbing::index_as_worktree::Change;
     use gix::status::plumbing::index_as_worktree::EntryStatus;
 
     match item {
         Item::TreeIndex(_) => flags.staged = true,
         Item::IndexWorktree(IWItem::Modification { status, .. }) => match status {
             EntryStatus::Conflict { .. } => flags.conflict = true,
+            EntryStatus::Change(Change::SubmoduleModification(_)) => {
+                *submodules = submodules.saturating_add(1);
+            }
             EntryStatus::Change(_) => flags.modified = true,
             EntryStatus::NeedsUpdate(_) | EntryStatus::IntentToAdd => {}
         },
@@ -678,9 +704,10 @@ fn classify_item(item: gix::status::Item, flags: &mut DirtyFlags) {
     }
 }
 
-// Wire format: 8 NUL-terminated fields:
-//   request_path, branch, ahead, behind, dirty, operation, upstream, stash
-// For non-repos, the last 7 fields are empty. ahead/behind are "0" when no
+// Wire format: 9 NUL-terminated fields:
+//   request_path, branch, ahead, behind, dirty, operation, upstream, stash,
+//   submodules
+// For non-repos, the last 8 fields are empty. ahead/behind are "0" when no
 // upstream or upstream is gone; the upstream field carries the qualitative
 // signal.
 fn build_status_bytes(request_path: &Path, status: Option<&Status>) -> Vec<u8> {
@@ -695,7 +722,7 @@ fn build_status_bytes(request_path: &Path, status: Option<&Status>) -> Vec<u8> {
         };
         write!(
             buf,
-            "{}\0{}\0{}\0{}\0{}\0{}\0{}\0",
+            "{}\0{}\0{}\0{}\0{}\0{}\0{}\0{}\0",
             s.branch,
             ahead,
             behind,
@@ -703,10 +730,11 @@ fn build_status_bytes(request_path: &Path, status: Option<&Status>) -> Vec<u8> {
             s.operation.unwrap_or(""),
             upstream_label,
             s.stash,
+            s.submodules,
         )
         .expect("writing to a Vec<u8> never fails");
     } else {
-        buf.extend_from_slice(b"\0\0\0\0\0\0\0");
+        buf.extend_from_slice(b"\0\0\0\0\0\0\0\0");
     }
     buf
 }
@@ -764,10 +792,11 @@ fn log_status_event(status: Option<&Status>, elapsed: Duration) {
                 UpstreamState::None => (0, 0, ""),
             };
             log::info!(
-                "status branch={} dirty={} ahead={ahead} behind={behind} upstream={upstream} stash={} op={} dur_ms={dur_ms}",
+                "status branch={} dirty={} ahead={ahead} behind={behind} upstream={upstream} stash={} submodules={} op={} dur_ms={dur_ms}",
                 s.branch,
                 s.dirty.encoded(),
                 s.stash,
+                s.submodules,
                 s.operation.unwrap_or(""),
             );
         }

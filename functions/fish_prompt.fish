@@ -71,7 +71,7 @@ function _fp_render_left --argument-names last_status cmd_duration
 
     if set -q _fp_status_file; and test -r $_fp_status_file
         set -l fields (cat $_fp_status_file | string split0)
-        if test (count $fields) -ge 8
+        if test (count $fields) -ge 9
             set -l reported_path $fields[1]
             set -l branch $fields[2]
             set -l ahead $fields[3]
@@ -80,6 +80,7 @@ function _fp_render_left --argument-names last_status cmd_duration
             set -l operation $fields[6]
             set -l upstream $fields[7]
             set -l stash $fields[8]
+            set -l submodules $fields[9]
 
             if test "$reported_path" = $PWD; and test -n "$branch"
                 set buf $buf (set_color $_fp_color_branch) " $branch"
@@ -115,6 +116,9 @@ function _fp_render_left --argument-names last_status cmd_duration
                 end
                 if test "$stash" != 0; and test -n "$stash"; and test "$_fp_show_stash" = 1
                     set buf $buf (set_color $_fp_color_stash) " $_fp_symbol_stash$stash"
+                end
+                if test "$submodules" != 0; and test -n "$submodules"; and test "$_fp_show_submodule" = 1
+                    set buf $buf (set_color $_fp_color_submodule) " $_fp_symbol_submodule$submodules"
                 end
                 set buf $buf (set_color normal)
             end

@@ -76,8 +76,14 @@ function assert_not_contains
     end
 end
 
-function write_status -d "Write an 8-field NUL-delimited status file: path branch ahead behind dirty operation upstream stash"
-    printf '%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s\0' $argv >$_fp_status_file
+function write_status -d "Write a NUL-delimited status file: path branch ahead behind dirty operation upstream stash submodules"
+    # Pad to 9 fields with "0" so existing 8-arg callers still work — the
+    # 9th field (submodules) defaults to no-submodules-dirty.
+    set -l fields $argv
+    while test (count $fields) -lt 9
+        set fields $fields 0
+    end
+    printf '%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s\0' $fields[1..9] >$_fp_status_file
 end
 
 # ----- tests -----
@@ -172,6 +178,30 @@ set -l out (fish_prompt | string collect)
 assert_contains "$out" "≡2" "stash alongside other markers"
 assert_contains "$out" "↑1" "stash does not displace ahead"
 assert_contains "$out" "*" "stash does not displace dirty"
+
+# Submodule indicator (9th field). Hidden when zero.
+write_status /tmp main 0 0 0 '' '' 0 0
+set -l out (fish_prompt | string collect)
+assert_not_contains "$out" "s0" "no submodule indicator when count is zero"
+
+write_status /tmp main 0 0 0 '' '' 0 3
+set -l out (fish_prompt | string collect)
+assert_contains "$out" "s3" "renders submodule indicator with count"
+
+# Toggle off submodule indicator.
+set -g _fp_show_submodule 0
+write_status /tmp main 0 0 0 '' '' 0 3
+set -l out (fish_prompt | string collect)
+assert_not_contains "$out" "s3" "submodule indicator hidden when _fp_show_submodule=0"
+set -g _fp_show_submodule 1
+
+# Submodule alongside other markers — still shows, doesn't displace.
+write_status /tmp main 1 0 '*' '' '' 2 4
+set -l out (fish_prompt | string collect)
+assert_contains "$out" "s4" "submodule alongside ahead/dirty/stash"
+assert_contains "$out" "↑1" "submodule does not displace ahead"
+assert_contains "$out" "*" "submodule does not displace dirty"
+assert_contains "$out" "≡2" "submodule does not displace stash"
 
 write_status /some/other/dir main 0 0 '*' '' '' 0
 set -l out (fish_prompt | string collect)
