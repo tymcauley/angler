@@ -506,6 +506,40 @@ command rm -f $_fp_status_file
 set -l out (fish_prompt | string collect)
 assert_contains "$out" "tmp" "still renders cwd with missing status file"
 
+# ----- corrupt status file recovery -----
+# The daemon writes via atomic rename so we don't see torn writes from it,
+# but external interference (filesystem corruption, a third-party writer)
+# could still leave malformed bytes on disk. fish_prompt must keep rendering
+# without crashing in every case.
+
+# Binary garbage, no NUL delimiters: split0 yields one field, the
+# `count >= 8` guard fails, git block stays hidden.
+printf '\x01\x02\x03\xff\xff\xff\x80garbage' >$_fp_status_file
+set -l out (fish_prompt | string collect)
+assert_contains "$out" "tmp" "still renders cwd with binary garbage status"
+
+# Truncated mid-record: only 2 fields, count guard fails.
+printf '/tmp\0main\0' >$_fp_status_file
+set -l out (fish_prompt | string collect)
+assert_contains "$out" "tmp" "still renders cwd with truncated status"
+assert_not_contains "$out" "main" "no git block when status is truncated"
+
+# Eight fields but the path doesn't match $PWD: path-match guard hides
+# the git block.
+write_status not-a-real-path main 0 0 0 '' '' 0
+set -l out (fish_prompt | string collect)
+assert_contains "$out" "tmp" "still renders cwd when status path is bogus"
+assert_not_contains "$out" "main" "no branch when status path is bogus"
+
+# Eight fields, path matches PWD, but numeric fields are non-numeric.
+# The daemon never writes this; this is the filesystem-corruption case.
+# We just assert no crash — current fish_prompt would render literal
+# garbage like ` ↑xyz`, which is acceptable for a corrupt-state recovery.
+write_status /tmp main xyz qqq '' '' '' abc
+set -l out (fish_prompt | string collect)
+assert_contains "$out" "tmp" "no crash when numeric fields are garbage"
+assert_contains "$out" "main" "branch still renders alongside garbage counts"
+
 # Defensive: fish_prompt must tolerate _fp_request_status being undefined.
 # Conf.d defines it only in interactive shells; without the `functions -q`
 # guard in fish_prompt, scripted use or partial installs would print
