@@ -898,6 +898,26 @@ fn no_submodules_reports_zero() {
 }
 
 #[test]
+fn rapid_cd_converges_on_final_path() {
+    // cd a; cd b; cd c with no waits between. Coalescing means walks for
+    // a/b can be in flight or queued when c arrives; the generation guard
+    // drops their results, and the pending-kick after a busy WalkComplete
+    // re-fires the walk against `current_pwd` (c) rather than the original
+    // requestor's path. Verifies all that converges on c eventually.
+    let h = Harness::new();
+    let a = make_clean_repo();
+    let b = make_clean_repo();
+    let c = make_clean_repo();
+
+    h.request(a.path());
+    h.request(b.path());
+    h.request(c.path());
+
+    let f = h.wait_for(c.path());
+    assert_eq!(f.branch, "main");
+}
+
+#[test]
 fn watched_repo_deleted_does_not_break_daemon() {
     // Daemon is watching repo A's .git/. We rm -rf A while the daemon is
     // running, which fires watcher events on now-missing paths. The daemon
