@@ -112,15 +112,18 @@ function _fp_init
 end
 
 # _fp_ensure_daemon respawns the daemon if it has died. Without this, a dead
-# daemon leaves the FIFO with no reader, and `echo $PWD >$_fp_request_fifo`
-# blocks on open(O_WRONLY) — i.e., the next cd hangs the shell. The write is
-# also backgrounded so the rare respawn race (fish writes before the new
-# daemon has opened the FIFO) can't stall fish either.
+# daemon leaves the FIFO with no reader, and the write below blocks on
+# open(O_WRONLY) — i.e., the next cd hangs the shell. The write is also
+# backgrounded so the rare respawn race (fish writes before the new daemon
+# has opened the FIFO) can't stall fish either.
+#
+# NUL-terminated so paths with embedded newlines or non-UTF-8 bytes
+# round-trip cleanly (matches `find -print0` framing).
 function _fp_request_status --on-variable PWD
     _fp_init
     set -q _fp_init_ok; or return
     _fp_ensure_daemon
-    echo $PWD >$_fp_request_fifo &
+    printf '%s\0' $PWD >$_fp_request_fifo &
     disown 2>/dev/null
 end
 

@@ -389,15 +389,32 @@ fn spawn_fifo_reader(fifo_path: PathBuf, tx: mpsc::Sender<Event>) {
                 return;
             }
         };
-        let reader = BufReader::new(fifo);
-        for line in reader.lines() {
-            let Ok(line) = line else {
-                tx.send(Event::Eof).ok();
-                return;
-            };
-            let path = PathBuf::from(line.trim());
-            if !path.as_os_str().is_empty() && tx.send(Event::Request(path)).is_err() {
-                return;
+        // NUL-delimited framing (matches `find -print0` / `xargs -0` style).
+        // Reading raw bytes keeps non-UTF-8 path bytes intact and tolerates
+        // embedded newlines; both are legal in Unix paths and would corrupt
+        // newline-delimited framing.
+        let mut reader = BufReader::new(fifo);
+        let mut buf = Vec::new();
+        loop {
+            buf.clear();
+            match reader.read_until(0, &mut buf) {
+                Ok(0) => break,
+                Ok(_) => {
+                    if buf.last() == Some(&0) {
+                        buf.pop();
+                    }
+                    if buf.is_empty() {
+                        continue;
+                    }
+                    let path = PathBuf::from(std::ffi::OsStr::from_bytes(&buf));
+                    if tx.send(Event::Request(path)).is_err() {
+                        return;
+                    }
+                }
+                Err(e) => {
+                    log::error!("fifo_read_failed err={e}");
+                    break;
+                }
             }
         }
         tx.send(Event::Eof).ok();

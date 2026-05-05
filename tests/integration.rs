@@ -1,5 +1,6 @@
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
@@ -82,7 +83,11 @@ impl Harness {
                 Err(e) => panic!("could not open request FIFO for write: {e}"),
             }
         };
-        writeln!(writer, "{}", path.display()).expect("write request");
+        // NUL-terminated to match the daemon's framing.
+        writer
+            .write_all(path.as_os_str().as_bytes())
+            .expect("write request");
+        writer.write_all(&[0]).expect("write terminator");
     }
 
     fn wait_for(&self, expected_path: &Path) -> Fields {
@@ -152,9 +157,11 @@ fn read_status(p: &Path) -> std::io::Result<Fields> {
     if parts.len() < 8 {
         return Err(std::io::Error::other("fewer than 8 fields"));
     }
+    // Path can contain non-UTF-8 bytes — keep them. Other fields are ASCII
+    // by daemon contract, so lossy UTF-8 is fine.
     let s = |b: &[u8]| std::str::from_utf8(b).unwrap_or("").to_owned();
     Ok(Fields {
-        path: PathBuf::from(s(parts[0])),
+        path: PathBuf::from(std::ffi::OsStr::from_bytes(parts[0])),
         branch: s(parts[1]),
         ahead: s(parts[2]),
         behind: s(parts[3]),
@@ -821,6 +828,35 @@ fn bursty_requests_coalesce_into_few_walks() {
         coalesced >= 1,
         "expected ≥1 walk_coalesced; got {coalesced}; log:\n{contents}",
     );
+}
+
+#[test]
+fn fifo_handles_path_with_non_utf8_bytes() {
+    // NUL-delimited framing means non-UTF-8 path bytes survive the FIFO
+    // round-trip. With newline-delimited String reads, lines() would error
+    // on the 0xff byte and tear down the reader thread.
+    let h = Harness::new();
+    let mut bytes = b"/tmp/".to_vec();
+    bytes.extend_from_slice(&[0xff, 0xfe]);
+    bytes.extend_from_slice(b"weird-path");
+    let path = PathBuf::from(std::ffi::OsStr::from_bytes(&bytes));
+    h.request(&path);
+    let f = h.wait_for(&path);
+    // The path doesn't exist; daemon reports it as a non-repo. The point of
+    // this test is that the daemon responded at all — i.e., the reader
+    // didn't choke on the non-UTF-8 bytes.
+    assert_eq!(f.branch, "");
+}
+
+#[test]
+fn fifo_handles_path_with_embedded_newline() {
+    // Embedded newlines are legal in Unix paths. NUL-delimited framing
+    // round-trips them; newline-delimited would split the request in two.
+    let h = Harness::new();
+    let path = PathBuf::from("/tmp/has\nnewline");
+    h.request(&path);
+    let f = h.wait_for(&path);
+    assert_eq!(f.branch, "");
 }
 
 #[test]
