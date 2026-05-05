@@ -542,7 +542,7 @@ fn compute_status_for_repo(repo: &gix::Repository, dirty: DirtyState) -> Status 
 // zero stashes (the normal case for repos that have never been stashed).
 fn count_stashes(git_dir: &Path) -> u32 {
     match std::fs::read_to_string(git_dir.join("logs/refs/stash")) {
-        Ok(content) => u32::try_from(content.lines().count()).expect("stash count overflows u32"),
+        Ok(content) => u32::try_from(content.lines().count()).unwrap_or(u32::MAX),
         Err(_) => 0,
     }
 }
@@ -600,8 +600,7 @@ fn compute_upstream(repo: &gix::Repository, head_name: &gix::refs::FullNameRef) 
             .all()
             .ok()
             .map_or(0, |walk| {
-                u32::try_from(walk.filter_map(Result::ok).count())
-                    .expect("ahead/behind count overflows u32")
+                u32::try_from(walk.filter_map(Result::ok).count()).unwrap_or(u32::MAX)
             })
     };
 
