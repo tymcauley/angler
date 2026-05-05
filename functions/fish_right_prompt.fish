@@ -1,6 +1,6 @@
 function fish_right_prompt
-    # Intentionally empty. fish_prompt embeds right-aligned content (time,
-    # command duration) on its first line directly, so the right-prompt
-    # appears on the same row as the path/git info even in our multi-line
-    # layout — which fish's built-in fish_right_prompt would not.
+    # Intentionally empty. All right-side content is rendered from inside
+    # fish_prompt (see _fp_render_right) so it lands on the same line as
+    # the path/git info, not the last line where fish_right_prompt would
+    # normally render.
 end
