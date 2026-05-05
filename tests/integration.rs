@@ -898,6 +898,39 @@ fn no_submodules_reports_zero() {
 }
 
 #[test]
+fn watched_repo_deleted_does_not_break_daemon() {
+    // Daemon is watching repo A's .git/. We rm -rf A while the daemon is
+    // running, which fires watcher events on now-missing paths. The daemon
+    // must not crash or wedge — proven by responding to a subsequent
+    // request for a different repo B.
+    let h = Harness::new();
+    let repo = make_clean_repo();
+    let repo_path = repo.path().to_path_buf();
+    h.request(&repo_path);
+    let _ = h.wait_for(&repo_path);
+
+    // Recursive delete via tempdir's Drop. The daemon's watch on the now-
+    // gone .git/ produces FSEvents/inotify events; our debouncer batches
+    // them and forwards a WatcherFired which the main loop handles by
+    // re-walking the (now-vanished) pwd.
+    drop(repo);
+
+    // Wait long enough for the deletion events to debounce and flow
+    // through the main loop. DEBOUNCE is 150ms; 300ms gives margin and
+    // also ensures any panic-driving codepath has fired before our next
+    // request arrives.
+    std::thread::sleep(Duration::from_millis(300));
+
+    // Daemon must still be alive and processing. Use a fresh repo to
+    // also exercise swap_repo_watch's behavior when the previously-
+    // watched git_dir no longer exists on disk.
+    let other = make_clean_repo();
+    h.request(other.path());
+    let f = h.wait_for(other.path());
+    assert_eq!(f.branch, "main");
+}
+
+#[test]
 fn fifo_handles_path_with_non_utf8_bytes() {
     // NUL-delimited framing means non-UTF-8 path bytes survive the FIFO
     // round-trip. With newline-delimited String reads, lines() would error
