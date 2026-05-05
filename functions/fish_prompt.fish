@@ -7,7 +7,11 @@ function fish_prompt
     # actually changes — see the idempotency guard in the daemon. This
     # keeps the prompt correct after external worktree changes (editor
     # saves, scripts in another window, etc.) that don't touch `.git/`.
-    _fp_request_status
+    # Guarded so this file is safe to source outside our conf.d (tests,
+    # partial installs); conf.d defines the function in interactive shells.
+    if functions -q _fp_request_status
+        _fp_request_status
+    end
 
     # fish renders fish_mode_prompt to the left of fish_prompt's first line;
     # its width has to come out of our padding budget, otherwise an indicator

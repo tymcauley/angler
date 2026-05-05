@@ -83,18 +83,33 @@ set -q _fp_log_file; or set -g _fp_log_file ""
 
 # ---- runtime state and daemon spawn ----
 status is-interactive; or exit 0
-command -q fish-prompt-daemon; or exit 0
 
-set -g _fp_dir (command mktemp -d -t fish-prompt-$fish_pid)
-set -g _fp_status_file $_fp_dir/status
-set -g _fp_request_fifo $_fp_dir/req
+# Lazy init: defer state setup and daemon spawn until first request, which
+# fires from fish_prompt's per-render kick. conf.d sources *before*
+# config.fish, so PATH manipulations in config.fish aren't visible here yet
+# — `command -q fish-prompt-daemon` would miss a daemon installed under
+# ~/.cargo/bin or similar. By first prompt render, config.fish has run.
+function _fp_init
+    set -q _fp_init_done; and return
+    set -g _fp_init_done 1
 
-command mkfifo $_fp_request_fifo
+    # Daemon binary missing: stay quiet for the rest of this fish session
+    # (picking up a later install requires `exec fish` either way).
+    command -q fish-prompt-daemon; or return
 
-# Daemon opens the FIFO with O_RDWR (non-blocking) and exits when its parent
-# (this fish) dies, via a getppid() watchdog. So fish doesn't need to hold a
-# long-lived fd open.
-_fp_spawn_daemon
+    set -g _fp_dir (command mktemp -d -t fish-prompt-$fish_pid)
+    set -g _fp_status_file $_fp_dir/status
+    set -g _fp_request_fifo $_fp_dir/req
+
+    command mkfifo $_fp_request_fifo
+
+    # Daemon opens the FIFO with O_RDWR (non-blocking) and exits when its
+    # parent (this fish) dies, via a getppid() watchdog. So fish doesn't
+    # need to hold a long-lived fd open.
+    _fp_spawn_daemon
+
+    set -g _fp_init_ok 1
+end
 
 # _fp_ensure_daemon respawns the daemon if it has died. Without this, a dead
 # daemon leaves the FIFO with no reader, and `echo $PWD >$_fp_request_fifo`
@@ -102,6 +117,8 @@ _fp_spawn_daemon
 # also backgrounded so the rare respawn race (fish writes before the new
 # daemon has opened the FIFO) can't stall fish either.
 function _fp_request_status --on-variable PWD
+    _fp_init
+    set -q _fp_init_ok; or return
     _fp_ensure_daemon
     echo $PWD >$_fp_request_fifo &
     disown 2>/dev/null
@@ -112,10 +129,5 @@ function _fp_repaint --on-signal SIGUSR1
 end
 
 function _fp_cleanup --on-event fish_exit
-    command rm -rf $_fp_dir
+    set -q _fp_dir; and command rm -rf $_fp_dir
 end
-
-# Trigger an initial request for the starting directory. Background it: if the
-# daemon isn't ready yet, the open(O_WRONLY) on the FIFO would block.
-echo $PWD >$_fp_request_fifo &
-disown 2>/dev/null

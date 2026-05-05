@@ -72,8 +72,7 @@ then `exec fish`.
 ## Configuration
 
 Knobs are fish variables you override.
-Most are read at prompt-render time, so `set -g` in `config.fish` works fine.
-A couple — `_fp_dirty_deadline_ms` and `_fp_log_file` — are read at daemon-spawn time and need `set -U` (see the daemon-tuning subsection below for why).
+All of them work with `set -g` in `config.fish`: symbols, colors, and toggles are read at prompt-render time, and the daemon spawns lazily on the first prompt render — after `config.fish` has run — so the daemon-tuning knobs (`_fp_dirty_deadline_ms`, `_fp_log_file`) are read in time too.
 
 Symbols:
 
@@ -147,29 +146,25 @@ Drop `--reverse` from the colors for plain colored letters; set the symbols to `
 Daemon tuning (passed as flags when the daemon spawns):
 
 ```fish
-set -U _fp_dirty_deadline_ms 200   # how long to wait synchronously before
+set -g _fp_dirty_deadline_ms 200   # how long to wait synchronously before
                                    # falling back to a deferred result
-set -U _fp_log_file ""             # path to the daemon log file; empty
+set -g _fp_log_file ""             # path to the daemon log file; empty
                                    # disables logging entirely (default)
 ```
 
-These two need to be **universal** (`set -U`), not global, because they're read inside our `conf.d/` snippet to build the daemon's argv — and `conf.d/` runs *before* `config.fish`.
-A `set -g` in `config.fish` is read too late: the daemon has already been spawned by the time it runs.
-Universals are loaded by fish before any startup file, so they're visible to the spawn helper.
-
-For all the other knobs above (symbols, colors, toggles), `set -g` in `config.fish` is fine — they're read at prompt-render time, well after `config.fish` has run.
-Per-session overrides via `set -g` in the running shell also work for those.
+The daemon spawns lazily on the first prompt render, so these are read after `config.fish` has run — `set -g` works.
+Per-session overrides in the running shell don't take effect until the daemon is restarted (`exec fish`), since they're read once at spawn time.
 
 ## Debugging
 
 If the prompt feels off — slow, stale, missing git info — point the daemon at a log file:
 
 ```fish
-set -U _fp_log_file ~/.cache/fish-prompt.log
+set -g _fp_log_file ~/.cache/fish-prompt.log
 exec fish
 ```
 
-(`set -U`, not `set -g` — the daemon reads this when it spawns, before `config.fish` runs. See the daemon-tuning notes above.)
+(`exec fish` because the daemon reads `_fp_log_file` once at spawn time.)
 
 Each line is `<rfc3339-timestamp> [<daemon-pid>] <event> key=value …`.
 Events include `start`, `request`, `watch` / `unwatch`, `watcher_fire`, `dirty_walk` (with `dur_ms` walk timing), `dirty_deferred` (deadline path), `walk_resolved` / `walk_dropped` / `walk_coalesced` / `walk_pending_kicked` (the coalescing pipeline), `status` / `status_skip` (idempotent write vs. unchanged-bytes skip), and `parent_died` (watchdog exit).
@@ -204,7 +199,7 @@ The Makefile install is the same thing in one command, plus dev-friendly symlink
 
 ## How it works
 
-A per-shell daemon spawned at fish init reads PWD changes from a FIFO, computes git status via gix, writes a NUL-delimited status file, and sends SIGUSR1 to fish — whose `--on-signal` handler calls `commandline -f repaint`.
+A per-shell daemon spawned on the first prompt render reads PWD changes from a FIFO, computes git status via gix, writes a NUL-delimited status file, and sends SIGUSR1 to fish — whose `--on-signal` handler calls `commandline -f repaint`.
 `fish_prompt` also pokes the daemon on every prompt render, so worktree-only changes (an editor saving a file between cds) get caught the next time anything redraws the prompt; the daemon dedupes its writes against the last-written bytes, so this per-render kick doesn't form a SIGUSR1 → repaint → request → SIGUSR1 loop.
 The daemon also watches `.git/` (and `.git/refs/` recursively) via `notify-debouncer-full`, so external git operations trigger the same render path.
 The dirty check is bounded by a deadline; on huge repos it returns "unknown" synchronously and the prompt updates again once the background scan finishes.

@@ -506,6 +506,22 @@ command rm -f $_fp_status_file
 set -l out (fish_prompt | string collect)
 assert_contains "$out" "tmp" "still renders cwd with missing status file"
 
+# Defensive: fish_prompt must tolerate _fp_request_status being undefined.
+# Conf.d defines it only in interactive shells; without the `functions -q`
+# guard in fish_prompt, scripted use or partial installs would print
+# "Unknown command" on every render.
+write_status /tmp main 0 0 0 '' '' 0
+functions -e _fp_request_status
+set -l err (begin; fish_prompt; end 2>&1 >/dev/null | string collect)
+if test -z "$err"
+    ok "fish_prompt is silent when _fp_request_status is undefined"
+else
+    fail "fish_prompt is silent when _fp_request_status is undefined"
+    echo "       stderr: $err"
+end
+function _fp_request_status
+end
+
 # ----- daemon respawn -----
 #
 # conf.d's spawn block is gated behind `status is-interactive`, so we can't
