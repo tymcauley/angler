@@ -126,8 +126,12 @@ function _fp_request_status --on-variable PWD
     _fp_init
     set -q _fp_init_ok; or return
     _fp_ensure_daemon
-    printf '%s\0' $PWD >$_fp_request_fifo &
-    disown 2>/dev/null
+    # External printf (not the builtin) so $last_pid gets set — fish
+    # leaves it empty for backgrounded builtin jobs, and bare `disown`
+    # would then fall back to fish's "last constructed job", which is
+    # the user's, not ours.
+    command printf '%s\0' $PWD >$_fp_request_fifo &
+    disown $last_pid 2>/dev/null
 end
 
 function _fp_repaint --on-signal SIGUSR1

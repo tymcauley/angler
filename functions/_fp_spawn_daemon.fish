@@ -15,5 +15,5 @@ function _fp_spawn_daemon
     end
     command fish-prompt-daemon $args &
     set -g _fp_daemon_pid $last_pid
-    disown 2>/dev/null
+    disown $_fp_daemon_pid 2>/dev/null
 end
