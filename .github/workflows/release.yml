@@ -45,7 +45,9 @@ jobs:
           cp "target/${{ matrix.target }}/release/angler-daemon" "dist/$name/"
           cp -r conf.d functions LICENSE README.md "dist/$name/"
           tar -C dist -czf "dist/$name.tar.gz" "$name"
-          shasum -a 256 "dist/$name.tar.gz" > "dist/$name.tar.gz.sha256"
+          # cd into dist/ so the recorded path is just the filename — lets
+          # `shasum -c` work from any directory the user downloaded into.
+          (cd dist && shasum -a 256 "$name.tar.gz" > "$name.tar.gz.sha256")
 
       - uses: softprops/action-gh-release@v3
         with:
