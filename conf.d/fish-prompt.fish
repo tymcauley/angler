@@ -100,7 +100,9 @@ function _fp_init
     # (picking up a later install requires `exec fish` either way).
     command -q fish-prompt-daemon; or return
 
-    set -g _fp_dir (command mktemp -d -t fish-prompt-$fish_pid)
+    set -l tmpdir $TMPDIR
+    test -n "$tmpdir"; or set tmpdir /tmp
+    set -g _fp_dir (command mktemp -d $tmpdir/fish-prompt-$fish_pid.XXXXXXXX)
     set -g _fp_status_file $_fp_dir/status
     set -g _fp_request_fifo $_fp_dir/req
 

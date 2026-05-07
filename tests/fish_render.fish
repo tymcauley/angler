@@ -604,7 +604,9 @@ if test -z "$daemon_path"
     echo "  skip: fish-prompt-daemon not found (run `cargo build --release` first)"
 else
     set -l saved_status_file $_fp_status_file
-    set -g _fp_dir (command mktemp -d -t fp-respawn-test)
+    set -l tmpdir $TMPDIR
+    test -n "$tmpdir"; or set tmpdir /tmp
+    set -g _fp_dir (command mktemp -d $tmpdir/fp-respawn-test.XXXXXXXX)
     set -g _fp_status_file $_fp_dir/status
     set -g _fp_request_fifo $_fp_dir/req
     command mkfifo $_fp_request_fifo

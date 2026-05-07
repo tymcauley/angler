@@ -7,7 +7,7 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant, SystemTime};
 
 use notify::RecursiveMode;
-use notify_debouncer_full::{DebounceEventResult, Debouncer, FileIdMap, new_debouncer};
+use notify_debouncer_full::{DebounceEventResult, Debouncer, RecommendedCache, new_debouncer};
 
 const DEFAULT_DIRTY_DEADLINE: Duration = Duration::from_millis(200);
 const DEBOUNCE: Duration = Duration::from_millis(150);
@@ -120,7 +120,7 @@ fn main() {
     spawn_walk_worker(work_rx, tx.clone());
 
     let watch_tx = tx.clone();
-    let mut debouncer: Debouncer<notify::RecommendedWatcher, FileIdMap> =
+    let mut debouncer: Debouncer<notify::RecommendedWatcher, RecommendedCache> =
         new_debouncer(DEBOUNCE, None, move |result: DebounceEventResult| {
             // We don't care which path fired — main thread re-computes for the
             // current PWD. (See the path-match guard in fish_prompt for why
@@ -320,7 +320,7 @@ fn maybe_kick_walk(
 // Swap which repo's `.git/` we watch. Idempotent if `git_dir` hasn't
 // changed since last call.
 fn swap_repo_watch(
-    debouncer: &mut Debouncer<notify::RecommendedWatcher, FileIdMap>,
+    debouncer: &mut Debouncer<notify::RecommendedWatcher, RecommendedCache>,
     repo: Option<&gix::Repository>,
     watched_git_dir: &mut Option<PathBuf>,
 ) {
@@ -463,7 +463,7 @@ fn spawn_watchdog() {
 //   - .git/refs recursively → catches local + remote ref tip moves.
 // A few inotify watches per repo regardless of repo size.
 fn watch_repo(
-    debouncer: &mut Debouncer<notify::RecommendedWatcher, FileIdMap>,
+    debouncer: &mut Debouncer<notify::RecommendedWatcher, RecommendedCache>,
     git_dir: &Path,
 ) -> Result<(), notify::Error> {
     debouncer.watch(git_dir, RecursiveMode::NonRecursive)?;
@@ -474,7 +474,10 @@ fn watch_repo(
     Ok(())
 }
 
-fn unwatch_repo(debouncer: &mut Debouncer<notify::RecommendedWatcher, FileIdMap>, git_dir: &Path) {
+fn unwatch_repo(
+    debouncer: &mut Debouncer<notify::RecommendedWatcher, RecommendedCache>,
+    git_dir: &Path,
+) {
     let _ = debouncer.unwatch(git_dir);
     let _ = debouncer.unwatch(git_dir.join("refs"));
 }
