@@ -1,0 +1,51 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Cancel in-flight runs on the same branch when a new push lands.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      # Stock Ubuntu lags fish 4.x; use the upstream PPA for a current build.
+      # Homebrew already tracks current on macOS.
+      - name: Install fish (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-add-repository -y ppa:fish-shell/release-4
+          sudo apt-get update
+          sudo apt-get install -y fish
+
+      - name: Install fish (macOS)
+        if: runner.os == 'macOS'
+        run: brew install fish
+
+      # Build the release binary so the fish daemon-respawn tests can find
+      # `angler-daemon` on PATH. `make check` itself doesn't build release.
+      - name: Build release binary
+        run: cargo build --release
+
+      - name: Add target/release to PATH
+        run: echo "$PWD/target/release" >> "$GITHUB_PATH"
+
+      - name: Run check
+        run: make check
