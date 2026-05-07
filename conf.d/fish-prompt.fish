@@ -122,8 +122,11 @@ end
 # backgrounded so the rare respawn race (fish writes before the new daemon
 # has opened the FIFO) can't stall fish either.
 #
-# NUL-terminated so paths with embedded newlines or non-UTF-8 bytes
-# round-trip cleanly (matches `find -print0` framing).
+# Wire framing: `FP1\0<path>\0` — a wire-version sentinel followed by the
+# request path, both NUL-terminated. NUL framing keeps embedded newlines
+# and non-UTF-8 bytes intact (matches `find -print0`). The daemon rejects
+# any first token that isn't `FP1`, so old fish + new daemon (or vice
+# versa) degrades to "no git block" instead of silently misparsing.
 function _fp_request_status --on-variable PWD
     _fp_init
     set -q _fp_init_ok; or return
@@ -132,7 +135,7 @@ function _fp_request_status --on-variable PWD
     # leaves it empty for backgrounded builtin jobs, and bare `disown`
     # would then fall back to fish's "last constructed job", which is
     # the user's, not ours.
-    command printf '%s\0' $PWD >$_fp_request_fifo &
+    command printf 'FP1\0%s\0' $PWD >$_fp_request_fifo &
     disown $last_pid 2>/dev/null
 end
 

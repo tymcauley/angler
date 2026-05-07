@@ -210,8 +210,9 @@ A persistent worker thread serializes all gix walks: bursts (e.g., `git checkout
 Daemon cleanup is automatic via a `getppid()` watchdog — no orphans on shell exit.
 If the daemon dies (panic, OOM, manual kill), fish respawns it before the next request rather than hanging on the FIFO write or rendering an empty git block forever.
 
-Both sides of the wire are NUL-delimited (matching `find -print0` framing — robust against paths with embedded newlines or non-UTF-8 bytes).
-The request is a single NUL-terminated path; the response is nine NUL-terminated fields: `<requested-path>\0<branch>\0<ahead>\0<behind>\0<dirty>\0<operation>\0<upstream>\0<stash>\0<submodules>\0`.
+Both sides of the wire are NUL-delimited (matching `find -print0` framing — robust against paths with embedded newlines or non-UTF-8 bytes) and prefixed with a wire-version sentinel `FP1`.
+The request is `FP1\0<path>\0`; the response is `FP1\0<requested-path>\0<branch>\0<ahead>\0<behind>\0<dirty>\0<operation>\0<upstream>\0<stash>\0<submodules>\0`.
+The version is checked strictly on both sides — old fish hitting a new daemon (or vice versa) degrades to "no git block" rather than silently misparsing.
 `branch` is empty when the path isn't a git repo; `dirty` is `0` for clean, `?` for unknown, or some combination of `+` (staged), `*` (modified), `u` (untracked), `!` (conflict); `operation` is a label like `rebasing`/`merging` or empty; `upstream` is `gone` or empty; `stash` is the stash count; `submodules` is the count of submodules with changes (subject to the user's `diff.ignoreSubmodules`).
 `fish_prompt` ignores responses whose path doesn't match the current `$PWD`, so stale fires during rapid `cd` are harmless.
 

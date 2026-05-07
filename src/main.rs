@@ -413,6 +413,11 @@ fn spawn_fifo_reader(fifo_path: PathBuf, tx: mpsc::Sender<Event>) {
         // Reading raw bytes keeps non-UTF-8 path bytes intact and tolerates
         // embedded newlines; both are legal in Unix paths and would corrupt
         // newline-delimited framing.
+        //
+        // Each request is two tokens: the wire-version sentinel followed by
+        // the path. A first token that doesn't match WIRE_VERSION is dropped
+        // — old fish hitting a new daemon will fall here, and degraded
+        // "no git block" is preferable to interpreting the path as a version.
         let mut reader = BufReader::new(fifo);
         let mut buf = Vec::new();
         loop {
@@ -426,9 +431,32 @@ fn spawn_fifo_reader(fifo_path: PathBuf, tx: mpsc::Sender<Event>) {
                     if buf.is_empty() {
                         continue;
                     }
-                    let path = PathBuf::from(std::ffi::OsStr::from_bytes(&buf));
-                    if tx.send(Event::Request(path)).is_err() {
-                        return;
+                    if buf != WIRE_VERSION {
+                        log::warn!(
+                            "fifo_request_unknown_version got={}",
+                            String::from_utf8_lossy(&buf)
+                        );
+                        continue;
+                    }
+                    buf.clear();
+                    match reader.read_until(0, &mut buf) {
+                        Ok(0) => break,
+                        Ok(_) => {
+                            if buf.last() == Some(&0) {
+                                buf.pop();
+                            }
+                            if buf.is_empty() {
+                                continue;
+                            }
+                            let path = PathBuf::from(std::ffi::OsStr::from_bytes(&buf));
+                            if tx.send(Event::Request(path)).is_err() {
+                                return;
+                            }
+                        }
+                        Err(e) => {
+                            log::error!("fifo_read_failed err={e}");
+                            break;
+                        }
                     }
                 }
                 Err(e) => {
@@ -707,14 +735,22 @@ fn classify_item(item: gix::status::Item, flags: &mut DirtyFlags, submodules: &m
     }
 }
 
-// Wire format: 9 NUL-terminated fields:
+// Wire format: a `FP<N>\0` version sentinel followed by N NUL-terminated
+// payload fields. v1 carries 9 payload fields:
 //   request_path, branch, ahead, behind, dirty, operation, upstream, stash,
 //   submodules
-// For non-repos, the last 8 fields are empty. ahead/behind are "0" when no
-// upstream or upstream is gone; the upstream field carries the qualitative
-// signal.
+// For non-repos, the last 8 payload fields are empty. ahead/behind are "0"
+// when no upstream or upstream is gone; the upstream field carries the
+// qualitative signal. The version is parsed strictly: anything other than
+// `FP1` is rejected. Old fish reading new daemon (or vice versa) sees a
+// version mismatch and degrades cleanly to "no git block" rather than
+// silently mixing schemes.
+const WIRE_VERSION: &[u8] = b"FP1";
+
 fn build_status_bytes(request_path: &Path, status: Option<&Status>) -> Vec<u8> {
     let mut buf = Vec::with_capacity(256);
+    buf.extend_from_slice(WIRE_VERSION);
+    buf.push(0);
     buf.extend_from_slice(request_path.as_os_str().as_bytes());
     buf.push(0);
     if let Some(s) = status {

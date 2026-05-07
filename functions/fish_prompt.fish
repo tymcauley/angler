@@ -81,6 +81,14 @@ function _fp_render_left --argument-names last_status cmd_duration
 
     if set -q _fp_status_file; and test -r $_fp_status_file
         set -l fields (cat $_fp_status_file | string split0)
+        # Wire-version sentinel: status file must start with `FP1`. Anything
+        # else (old daemon writing v0, malformed bytes, partial install) is
+        # treated as no git info — same fall-through as a count-guard miss.
+        if test (count $fields) -ge 1; and test "$fields[1]" = FP1
+            set -e fields[1]
+        else
+            set fields
+        end
         if test (count $fields) -ge 9
             set -l reported_path $fields[1]
             set -l branch $fields[2]

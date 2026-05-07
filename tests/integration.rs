@@ -88,7 +88,9 @@ impl Harness {
                 Err(e) => panic!("could not open request FIFO for write: {e}"),
             }
         };
-        // NUL-terminated to match the daemon's framing.
+        // Wire framing: `FP1\0<path>\0`. NUL-terminated keeps non-UTF-8 path
+        // bytes intact and matches the daemon's reader.
+        writer.write_all(b"FP1\0").expect("write version");
         writer
             .write_all(path.as_os_str().as_bytes())
             .expect("write request");
@@ -160,22 +162,28 @@ fn read_status(p: &Path) -> std::io::Result<Fields> {
     let mut buf = Vec::new();
     File::open(p)?.read_to_end(&mut buf)?;
     let parts: Vec<&[u8]> = buf.split(|&b| b == 0).collect();
-    if parts.len() < 9 {
-        return Err(std::io::Error::other("fewer than 9 fields"));
+    // Wire framing: `FP1\0` sentinel + 9 payload fields. Reject anything
+    // else — the daemon never writes a different shape, so a mismatch
+    // means a partial write or a version skew, not a soft fallback.
+    if parts.first().copied() != Some(b"FP1".as_slice()) {
+        return Err(std::io::Error::other("missing FP1 wire-version sentinel"));
+    }
+    if parts.len() < 10 {
+        return Err(std::io::Error::other("fewer than 9 payload fields"));
     }
     // Path can contain non-UTF-8 bytes — keep them. Other fields are ASCII
     // by daemon contract, so lossy UTF-8 is fine.
     let s = |b: &[u8]| std::str::from_utf8(b).unwrap_or("").to_owned();
     Ok(Fields {
-        path: PathBuf::from(std::ffi::OsStr::from_bytes(parts[0])),
-        branch: s(parts[1]),
-        ahead: s(parts[2]),
-        behind: s(parts[3]),
-        dirty: s(parts[4]),
-        operation: s(parts[5]),
-        upstream: s(parts[6]),
-        stash: s(parts[7]),
-        submodules: s(parts[8]),
+        path: PathBuf::from(std::ffi::OsStr::from_bytes(parts[1])),
+        branch: s(parts[2]),
+        ahead: s(parts[3]),
+        behind: s(parts[4]),
+        dirty: s(parts[5]),
+        operation: s(parts[6]),
+        upstream: s(parts[7]),
+        stash: s(parts[8]),
+        submodules: s(parts[9]),
     })
 }
 

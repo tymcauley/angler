@@ -76,14 +76,15 @@ function assert_not_contains
     end
 end
 
-function write_status -d "Write a NUL-delimited status file: path branch ahead behind dirty operation upstream stash submodules"
-    # Pad to 9 fields with "0" so existing 8-arg callers still work — the
-    # 9th field (submodules) defaults to no-submodules-dirty.
+function write_status -d "Write a NUL-delimited status file: FP1 sentinel + path branch ahead behind dirty operation upstream stash submodules"
+    # Pad to 9 payload fields with "0" so existing 8-arg callers still work
+    # — the 9th field (submodules) defaults to no-submodules-dirty. The
+    # `FP1` wire-version sentinel is prepended automatically.
     set -l fields $argv
     while test (count $fields) -lt 9
         set fields $fields 0
     end
-    printf '%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s\0' $fields[1..9] >$_fp_status_file
+    printf 'FP1\0%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s\0' $fields[1..9] >$_fp_status_file
 end
 
 # ----- tests -----
@@ -589,25 +590,39 @@ assert_contains "$out" "tmp" "still renders cwd with missing status file"
 # without crashing in every case.
 
 # Binary garbage, no NUL delimiters: split0 yields one field, the
-# `count >= 8` guard fails, git block stays hidden.
+# version-sentinel guard fails, git block stays hidden.
 printf '\x01\x02\x03\xff\xff\xff\x80garbage' >$_fp_status_file
 set -l out (fish_prompt | string collect)
 assert_contains "$out" "tmp" "still renders cwd with binary garbage status"
 
-# Truncated mid-record: only 2 fields, count guard fails.
+# Truncated mid-record: only 2 fields and no version sentinel. Either guard
+# is enough to hide the git block.
 printf '/tmp\0main\0' >$_fp_status_file
 set -l out (fish_prompt | string collect)
 assert_contains "$out" "tmp" "still renders cwd with truncated status"
 assert_not_contains "$out" "main" "no git block when status is truncated"
 
-# Eight fields but the path doesn't match $PWD: path-match guard hides
-# the git block.
+# v0-shaped status (no FP1 sentinel) — what an old daemon would write to a
+# new fish. The version guard rejects it; the git block is hidden.
+printf '/tmp\0main\0 0\0 0\0 0\0\0\0 0\0 0\0' >$_fp_status_file
+set -l out (fish_prompt | string collect)
+assert_contains "$out" "tmp" "still renders cwd against v0-shaped status"
+assert_not_contains "$out" "main" "no git block when wire version is missing"
+
+# Wrong sentinel (e.g., a hypothetical future FP2 the daemon emits while
+# this fish is still on FP1). Same fall-through.
+printf 'FP2\0/tmp\0main\0 0\0 0\0 0\0\0\0 0\0 0\0 0\0' >$_fp_status_file
+set -l out (fish_prompt | string collect)
+assert_contains "$out" "tmp" "still renders cwd against unknown wire version"
+assert_not_contains "$out" "main" "no git block when wire version is unknown"
+
+# Path doesn't match $PWD: path-match guard hides the git block.
 write_status not-a-real-path main 0 0 0 '' '' 0
 set -l out (fish_prompt | string collect)
 assert_contains "$out" "tmp" "still renders cwd when status path is bogus"
 assert_not_contains "$out" "main" "no branch when status path is bogus"
 
-# Eight fields, path matches PWD, but numeric fields are non-numeric.
+# Path matches PWD, but numeric fields are non-numeric.
 # The daemon never writes this; this is the filesystem-corruption case.
 # We just assert no crash — current fish_prompt would render literal
 # garbage like ` ↑xyz`, which is acceptable for a corrupt-state recovery.
