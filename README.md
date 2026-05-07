@@ -43,18 +43,39 @@ Line 2: prompt symbol (default `❯`).
 ## Requirements
 
 - fish ≥ 4.0
-- Rust toolchain for building
 - macOS or Linux (the BSDs probably work; Windows is untested)
 
 ## Install
 
+angler is two halves: fish files (the prompt rendering) and a Rust daemon (`angler-daemon`, the git status engine).
+Pick a path:
+
+### fisher (recommended)
+
+```fish
+fisher install tymcauley/angler
+```
+
+This installs the fish files.
+On install or `fisher update`, angler checks for `angler-daemon` on `$PATH` and prints what to do if it's missing or out of date — usually one of:
+
+```fish
+cargo install --locked --git https://github.com/tymcauley/angler --tag v0.1.0
+```
+
+or grab a prebuilt tarball from [GitHub Releases](https://github.com/tymcauley/angler/releases) and put `angler-daemon` somewhere on `$PATH`.
+
+Then `exec fish`.
+
+### From source (for hacking on angler)
+
 ```sh
-git clone <repo-url> ~/code/angler
+git clone https://github.com/tymcauley/angler ~/code/angler
 cd ~/code/angler
 make install
 ```
 
-This builds and installs the daemon binary to `~/.cargo/bin/angler-daemon` and symlinks the fish files into `$XDG_CONFIG_HOME/fish/` (defaulting to `~/.config/fish/`).
+Builds the daemon to `~/.cargo/bin/angler-daemon` and **symlinks** the fish files into `$__fish_config_dir` (typically `~/.config/fish/`).
 Symlinks rather than copies, so editing the repo files and running `exec fish` picks up changes without reinstalling.
 
 For a non-default fish config dir: `make install FISH_CONFIG_DIR=/some/path`.

@@ -80,6 +80,10 @@ fn main() {
                 }
                 i += 2;
             }
+            "--version" | "-V" => {
+                println!("angler-daemon {}", env!("CARGO_PKG_VERSION"));
+                std::process::exit(0);
+            }
             other => {
                 eprintln!("angler-daemon: unknown argument: {other}");
                 std::process::exit(2);
