@@ -4,6 +4,12 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.95"
 license = "MIT"
+description = "Asynchronous git prompt daemon for the fish shell"
+repository = "https://github.com/tymcauley/angler"
+homepage = "https://github.com/tymcauley/angler"
+readme = "README.md"
+keywords = ["fish", "prompt", "git", "daemon", "gix"]
+categories = ["command-line-utilities", "development-tools"]
 
 [[bin]]
 name = "angler-daemon"
