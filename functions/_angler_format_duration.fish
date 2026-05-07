@@ -1,4 +1,4 @@
-function _fp_format_duration --argument-names ms
+function _angler_format_duration --argument-names ms
     # Returns a short human-readable duration string. Empty for very short
     # durations (caller is expected to gate on threshold separately if it
     # cares); otherwise:

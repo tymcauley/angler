@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use tempfile::TempDir;
 
-const DAEMON: &str = env!("CARGO_BIN_EXE_fish-prompt-daemon");
+const DAEMON: &str = env!("CARGO_BIN_EXE_angler-daemon");
 const RESPONSE_TIMEOUT: Duration = Duration::from_secs(2);
 
 // SIGUSR1's default action is terminate. The daemon signals our test process,
@@ -88,9 +88,9 @@ impl Harness {
                 Err(e) => panic!("could not open request FIFO for write: {e}"),
             }
         };
-        // Wire framing: `FP1\0<path>\0`. NUL-terminated keeps non-UTF-8 path
+        // Wire framing: `AN1\0<path>\0`. NUL-terminated keeps non-UTF-8 path
         // bytes intact and matches the daemon's reader.
-        writer.write_all(b"FP1\0").expect("write version");
+        writer.write_all(b"AN1\0").expect("write version");
         writer
             .write_all(path.as_os_str().as_bytes())
             .expect("write request");
@@ -162,11 +162,11 @@ fn read_status(p: &Path) -> std::io::Result<Fields> {
     let mut buf = Vec::new();
     File::open(p)?.read_to_end(&mut buf)?;
     let parts: Vec<&[u8]> = buf.split(|&b| b == 0).collect();
-    // Wire framing: `FP1\0` sentinel + 9 payload fields. Reject anything
+    // Wire framing: `AN1\0` sentinel + 9 payload fields. Reject anything
     // else — the daemon never writes a different shape, so a mismatch
     // means a partial write or a version skew, not a soft fallback.
-    if parts.first().copied() != Some(b"FP1".as_slice()) {
-        return Err(std::io::Error::other("missing FP1 wire-version sentinel"));
+    if parts.first().copied() != Some(b"AN1".as_slice()) {
+        return Err(std::io::Error::other("missing AN1 wire-version sentinel"));
     }
     if parts.len() < 10 {
         return Err(std::io::Error::other("fewer than 9 payload fields"));

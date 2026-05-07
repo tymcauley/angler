@@ -81,7 +81,7 @@ fn main() {
                 i += 2;
             }
             other => {
-                eprintln!("fish-prompt-daemon: unknown argument: {other}");
+                eprintln!("angler-daemon: unknown argument: {other}");
                 std::process::exit(2);
             }
         }
@@ -95,7 +95,7 @@ fn main() {
         && let Err(e) = install_logger(path)
     {
         eprintln!(
-            "fish-prompt-daemon: --log-file open failed for {}: {e}",
+            "angler-daemon: --log-file open failed for {}: {e}",
             path.display(),
         );
     }
@@ -404,7 +404,7 @@ fn spawn_fifo_reader(fifo_path: PathBuf, tx: mpsc::Sender<Event>) {
             Ok(f) => f,
             Err(e) => {
                 log::error!("fifo_open_failed err={e}");
-                eprintln!("fish-prompt-daemon: open fifo: {e}");
+                eprintln!("angler-daemon: open fifo: {e}");
                 tx.send(Event::Eof).ok();
                 return;
             }
@@ -742,10 +742,10 @@ fn classify_item(item: gix::status::Item, flags: &mut DirtyFlags, submodules: &m
 // For non-repos, the last 8 payload fields are empty. ahead/behind are "0"
 // when no upstream or upstream is gone; the upstream field carries the
 // qualitative signal. The version is parsed strictly: anything other than
-// `FP1` is rejected. Old fish reading new daemon (or vice versa) sees a
+// `AN1` is rejected. Old fish reading new daemon (or vice versa) sees a
 // version mismatch and degrades cleanly to "no git block" rather than
 // silently mixing schemes.
-const WIRE_VERSION: &[u8] = b"FP1";
+const WIRE_VERSION: &[u8] = b"AN1";
 
 fn build_status_bytes(request_path: &Path, status: Option<&Status>) -> Vec<u8> {
     let mut buf = Vec::with_capacity(256);
