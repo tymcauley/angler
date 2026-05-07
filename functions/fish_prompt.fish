@@ -23,6 +23,16 @@ function fish_prompt
         set mode_w (string length --visible -- "$mode_str")
     end
 
+    # fish 4.6+ prepends $SHELL_PROMPT_PREFIX (set by tools like systemd's
+    # run0) to our left-prompt output. It lands ahead of $left on line 1, so
+    # its width has to come out of the padding budget too — same family as
+    # mode_w. $SHELL_PROMPT_SUFFIX is appended after our entire output and
+    # lands on the prompt-symbol line, so it doesn't affect line-1 padding.
+    set -l prefix_w 0
+    if set -q SHELL_PROMPT_PREFIX; and test -n "$SHELL_PROMPT_PREFIX"
+        set prefix_w (string length --visible -- "$SHELL_PROMPT_PREFIX")
+    end
+
     # Build line 1 from left and right halves. Left always renders fully;
     # right side has its own priority-drop logic (in _fp_render_right) so
     # that low-priority indicators yield to higher-priority ones when the
@@ -30,7 +40,7 @@ function fish_prompt
     set -l left (_fp_render_left $last_status $cmd_duration | string collect)
     set -l left_w (string length --visible -- "$left")
 
-    set -l effective_left_w (math "$left_w + $mode_w")
+    set -l effective_left_w (math "$left_w + $mode_w + $prefix_w")
     set -l right (_fp_render_right $effective_left_w | string collect)
     set -l right_w (string length --visible -- "$right")
 

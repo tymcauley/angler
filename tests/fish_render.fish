@@ -519,6 +519,52 @@ end
 
 set -g _fp_show_time 0
 
+# ----- regression: line 1 padding accounts for SHELL_PROMPT_PREFIX width -----
+#
+# fish 4.6+ inserts $SHELL_PROMPT_PREFIX at position 0 of the left-prompt
+# buffer (set by systemd's run0, etc.). It lands ahead of our $left on
+# line 1, so without subtracting its width from the padding budget, line 1
+# overflows $COLUMNS and fish truncates from the left.
+
+set -gx SHELL_PROMPT_PREFIX '[run0] '
+set -g _fp_show_time 1
+set -g COLUMNS 80
+set -gx fish_key_bindings fish_default_key_bindings
+
+set -l prefix_w (string length --visible -- "$SHELL_PROMPT_PREFIX")
+set -l mode_w (string length --visible -- (fish_mode_prompt | string collect))
+
+write_status /tmp main 0 0 0 '' '' 0
+set -l out (fish_prompt | string collect)
+set -l line1 (string split \n -- $out)[1]
+set -l line1_w (string length --visible -- "$line1")
+set -l combined (math "$prefix_w + $mode_w + $line1_w")
+
+if test $combined -eq $COLUMNS
+    ok "line 1 + SHELL_PROMPT_PREFIX width equals \$COLUMNS"
+else
+    fail "line 1 + SHELL_PROMPT_PREFIX width equals \$COLUMNS"
+    echo "       expected: prefix_w + mode_w + line1_w = $COLUMNS"
+    echo "       actual:   $prefix_w + $mode_w + $line1_w = $combined"
+end
+
+# Sanity: empty prefix should be a no-op (treated as if unset).
+set -gx SHELL_PROMPT_PREFIX ''
+set -l out (fish_prompt | string collect)
+set -l line1 (string split \n -- $out)[1]
+set -l line1_w (string length --visible -- "$line1")
+set -l combined (math "$mode_w + $line1_w")
+if test $combined -eq $COLUMNS
+    ok "empty SHELL_PROMPT_PREFIX is a no-op"
+else
+    fail "empty SHELL_PROMPT_PREFIX is a no-op"
+    echo "       expected: mode_w + line1_w = $COLUMNS"
+    echo "       actual:   $mode_w + $line1_w = $combined"
+end
+
+set -e SHELL_PROMPT_PREFIX
+set -g _fp_show_time 0
+
 # Reset for following tests.
 set -g _fp_symbol_vi_default '[N]'
 set -g _fp_symbol_vi_insert  '[I]'
