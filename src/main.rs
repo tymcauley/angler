@@ -49,8 +49,7 @@ struct WalkResult {
 
 fn main() {
     let mut fish_pid: Option<i32> = None;
-    let mut status_file: Option<PathBuf> = None;
-    let mut request_fifo: Option<PathBuf> = None;
+    let mut state_dir: Option<PathBuf> = None;
     let mut log_file: Option<PathBuf> = None;
     let mut dirty_deadline = DEFAULT_DIRTY_DEADLINE;
 
@@ -62,12 +61,8 @@ fn main() {
                 fish_pid = args.get(i + 1).and_then(|s| s.parse().ok());
                 i += 2;
             }
-            "--status-file" => {
-                status_file = args.get(i + 1).map(PathBuf::from);
-                i += 2;
-            }
-            "--request-fifo" => {
-                request_fifo = args.get(i + 1).map(PathBuf::from);
+            "--state-dir" => {
+                state_dir = args.get(i + 1).map(PathBuf::from);
                 i += 2;
             }
             "--log-file" => {
@@ -92,8 +87,9 @@ fn main() {
     }
 
     let fish_pid = fish_pid.expect("--fish-pid required");
-    let status_file = status_file.expect("--status-file required");
-    let request_fifo = request_fifo.expect("--request-fifo required");
+    let state_dir = state_dir.expect("--state-dir required");
+    let request_fifo = state_dir.join("req");
+    let status_file = state_dir.join("status");
 
     if let Some(path) = log_file.as_ref()
         && let Err(e) = install_logger(path)
@@ -105,9 +101,8 @@ fn main() {
     }
 
     log::info!(
-        "start fish_pid={fish_pid} status_file={} request_fifo={} dirty_deadline_ms={}",
-        status_file.display(),
-        request_fifo.display(),
+        "start fish_pid={fish_pid} state_dir={} dirty_deadline_ms={}",
+        state_dir.display(),
         dirty_deadline.as_millis(),
     );
 

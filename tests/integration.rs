@@ -50,10 +50,8 @@ impl Harness {
         cmd.args([
             "--fish-pid",
             &pid.to_string(),
-            "--status-file",
-            status_file.to_str().unwrap(),
-            "--request-fifo",
-            request_fifo.to_str().unwrap(),
+            "--state-dir",
+            state.path().to_str().unwrap(),
         ]);
         cmd.args(extra);
         // Hermetic from the test runner's user git config — without this,
