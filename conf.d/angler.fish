@@ -87,34 +87,10 @@ set -q _angler_log_file; or set -g _angler_log_file ""
 # ---- runtime state and daemon spawn ----
 status is-interactive; or exit 0
 
-# Lazy init: defer state setup and daemon spawn until first request, which
-# fires from fish_prompt's per-render kick. conf.d sources *before*
-# config.fish, so PATH manipulations in config.fish aren't visible here yet
-# — `command -q angler-daemon` would miss a daemon installed under
-# ~/.cargo/bin or similar. By first prompt render, config.fish has run.
-function _angler_init
-    set -q _angler_init_done; and return
-    set -g _angler_init_done 1
-
-    # Daemon binary missing: stay quiet for the rest of this fish session
-    # (picking up a later install requires `exec fish` either way).
-    command -q angler-daemon; or return
-
-    set -l tmpdir $TMPDIR
-    test -n "$tmpdir"; or set tmpdir /tmp
-    set -g _angler_dir (command mktemp -d $tmpdir/angler-$fish_pid.XXXXXXXX)
-    set -g _angler_status_file $_angler_dir/status
-    set -g _angler_request_fifo $_angler_dir/req
-
-    command mkfifo $_angler_request_fifo
-
-    # Daemon opens the FIFO with O_RDWR (non-blocking) and exits when its
-    # parent (this fish) dies, via a getppid() watchdog. So fish doesn't
-    # need to hold a long-lived fd open.
-    _angler_spawn_daemon
-
-    set -g _angler_init_ok 1
-end
+# _angler_init is autoloaded from functions/. It's lazy: deferred to the
+# first request from fish_prompt's per-render kick, so config.fish has run
+# by then and PATH manipulations there are visible (`command -q
+# angler-daemon` works regardless of where the binary lives).
 
 # _angler_ensure_daemon respawns the daemon if it has died. Without this, a dead
 # daemon leaves the FIFO with no reader, and the write below blocks on
@@ -143,6 +119,12 @@ function _angler_repaint --on-signal SIGUSR1
     commandline -f repaint
 end
 
+# Mostly redundant with the daemon's parent-death cleanup, which removes
+# the same dir on its way out. Kept because fish_exit fires synchronously
+# in fish's exit path, so on a normal exit the dir is gone before the
+# daemon's signal-handler thread races to do the same. fish_exit does NOT
+# fire on `exec fish` (correctly — the new fish image adopts the dir) or
+# on kill -9 (the daemon-side cleanup catches that case).
 function _angler_cleanup --on-event fish_exit
     set -q _angler_dir; and command rm -rf $_angler_dir
 end

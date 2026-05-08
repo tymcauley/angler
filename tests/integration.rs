@@ -1,9 +1,9 @@
 use std::fs::{File, OpenOptions};
-use std::io::{Read, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command};
+use std::process::{Child, Command, Stdio};
 use std::sync::Once;
 use std::time::{Duration, Instant};
 
@@ -1003,4 +1003,73 @@ fn multiple_requests_in_sequence() {
     h.request(none.path());
     let f = h.wait_for(none.path());
     assert_eq!(f.branch, "");
+}
+
+#[test]
+fn daemon_exits_and_cleans_up_when_parent_dies() {
+    // Use sh as an intermediate parent so we can kill it without taking
+    // down the test runner. sh backgrounds the daemon, prints its PID on
+    // stdout, then sleeps; killing sh reparents the daemon, and its
+    // PR_SET_PDEATHSIG / kqueue arming fires.
+    let state = tempfile::tempdir().expect("mkdtemp");
+    let request_fifo = state.path().join("req");
+    let c_path = std::ffi::CString::new(request_fifo.as_os_str().as_encoded_bytes()).unwrap();
+    let rc = unsafe { libc::mkfifo(c_path.as_ptr(), 0o600) };
+    assert_eq!(rc, 0, "mkfifo failed");
+
+    // fish_pid is just the SIGUSR1 destination. Test runner ignores SIGUSR1
+    // (via ignore_sigusr1 in other tests), but this test doesn't trigger any
+    // walk, so there should be no signal traffic. Use the test runner's
+    // PID anyway so the daemon has a valid target.
+    let test_pid = std::process::id();
+    let mut shell = Command::new("sh")
+        .arg("-c")
+        .arg(format!(
+            "{} --fish-pid {} --state-dir {} >/dev/null 2>&1 & echo $! && sleep 60",
+            DAEMON,
+            test_pid,
+            state.path().display(),
+        ))
+        .stdout(Stdio::piped())
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_SYSTEM", "/dev/null")
+        .spawn()
+        .expect("spawn sh");
+
+    let mut buf = String::new();
+    BufReader::new(shell.stdout.take().unwrap())
+        .read_line(&mut buf)
+        .expect("read daemon pid from sh");
+    let daemon_pid: i32 = buf.trim().parse().expect("parse daemon pid");
+
+    // Give the daemon a moment to arm parent-death detection. Without
+    // this, the kill below could land in the registration race window;
+    // the daemon handles that case (re-checks getppid / kill -0), but the
+    // test wants to exercise the steady-state path.
+    std::thread::sleep(Duration::from_millis(200));
+
+    // Kill sh — daemon's parent task is now gone.
+    shell.kill().expect("kill sh");
+    shell.wait().expect("reap sh");
+
+    // Daemon should exit within ~1s.
+    let deadline = Instant::now() + Duration::from_secs(1);
+    while unsafe { libc::kill(daemon_pid, 0) } == 0 {
+        assert!(
+            Instant::now() < deadline,
+            "daemon (pid={daemon_pid}) did not exit within 1s after parent died"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+
+    // And state_dir should be cleaned up.
+    let cleanup_deadline = Instant::now() + Duration::from_millis(200);
+    while state.path().exists() {
+        assert!(
+            Instant::now() < cleanup_deadline,
+            "state_dir {} still present after daemon exit",
+            state.path().display(),
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
 }

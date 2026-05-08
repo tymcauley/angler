@@ -718,6 +718,71 @@ else
     functions -e _angler_test_sigusr1
 end
 
+# ----- adoption (deterministic-path init) -----
+#
+# `_angler_init` builds a per-PID state dir at a deterministic path, so that
+# across `exec fish` the new fish image finds the existing FIFO + live
+# pidfile and adopts the daemon instead of orphaning it. We can't actually
+# `exec` from within a running test, but we can simulate the post-exec
+# state by clearing the globals fish would have lost across exec and
+# calling `_angler_init` again.
+
+if test -z "$daemon_path"
+    echo "  skip: angler-daemon not found (adoption tests)"
+else
+    # Override XDG_RUNTIME_DIR so the test doesn't litter the real one.
+    set -gx XDG_RUNTIME_DIR (command mktemp -d)
+
+    function _angler_test_sigusr1 --on-signal SIGUSR1
+    end
+
+    # First init: fresh state, daemon spawns.
+    set -e _angler_init_done _angler_init_ok _angler_daemon_pid
+    set -e _angler_dir _angler_status_file _angler_request_fifo _angler_pid_file
+    _angler_init
+    set -l first_pid $_angler_daemon_pid
+    if test -n "$first_pid"; and kill -0 $first_pid 2>/dev/null
+        ok "_angler_init cold-starts a daemon"
+    else
+        fail "_angler_init cold-starts a daemon"
+        echo "       _angler_daemon_pid=$_angler_daemon_pid"
+    end
+
+    # Simulate `exec fish`: the new image has lost all globals but the
+    # state dir + FIFO + live pidfile are still on disk.
+    set -e _angler_init_done _angler_init_ok _angler_daemon_pid
+    set -e _angler_dir _angler_status_file _angler_request_fifo _angler_pid_file
+    _angler_init
+    if test "$_angler_daemon_pid" = "$first_pid"
+        ok "_angler_init adopts existing daemon across simulated exec"
+    else
+        fail "_angler_init adopts existing daemon across simulated exec"
+        echo "       first=$first_pid second=$_angler_daemon_pid"
+    end
+
+    # Stale state: the prior daemon is dead. Init should rm -rf the dir
+    # and respawn fresh.
+    command kill -9 $first_pid 2>/dev/null
+    sleep 0.3
+    set -e _angler_init_done _angler_init_ok _angler_daemon_pid
+    set -e _angler_dir _angler_status_file _angler_request_fifo _angler_pid_file
+    _angler_init
+    set -l third_pid $_angler_daemon_pid
+    if test -n "$third_pid"; and test "$third_pid" != "$first_pid"; and kill -0 $third_pid 2>/dev/null
+        ok "_angler_init cold-starts when prior pidfile is dead"
+    else
+        fail "_angler_init cold-starts when prior pidfile is dead"
+        echo "       first=$first_pid third=$third_pid"
+    end
+
+    # Cleanup.
+    command kill -9 $third_pid 2>/dev/null
+    sleep 0.2
+    command rm -rf $XDG_RUNTIME_DIR
+    set -e XDG_RUNTIME_DIR
+    functions -e _angler_test_sigusr1
+end
+
 # ----- summary -----
 
 echo

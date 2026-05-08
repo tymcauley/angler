@@ -106,7 +106,7 @@ fn main() {
         dirty_deadline.as_millis(),
     );
 
-    spawn_watchdog();
+    arm_parent_death(state_dir.clone());
 
     let (tx, rx) = mpsc::channel();
 
@@ -468,19 +468,150 @@ fn spawn_fifo_reader(fifo_path: PathBuf, tx: mpsc::Sender<Event>) {
     });
 }
 
-fn spawn_watchdog() {
+// Arm the kernel to notify us when our parent (fish) dies, then sleep
+// efficiently until that happens. Linux uses PR_SET_PDEATHSIG: the kernel
+// sends a signal when the parent thread group exits. macOS uses kqueue
+// EVFILT_PROC | NOTE_EXIT: a kqueue fd becomes readable on parent exit.
+// Either way, no polling — the daemon is genuinely idle between events,
+// not waking every 500ms.
+//
+// Both paths handle the registration race (parent already dead when we
+// arm) by re-checking after registration. Both clean up state_dir before
+// exit so a kill -9 of fish doesn't leak files.
+//
+// Fail loud on registration failure: a daemon we can't shut down on
+// parent death is worse than no daemon at all.
+fn arm_parent_death(state_dir: PathBuf) {
     let initial_ppid = unsafe { libc::getppid() };
+
+    #[cfg(target_os = "linux")]
+    arm_parent_death_linux(initial_ppid, state_dir);
+    #[cfg(target_os = "macos")]
+    arm_parent_death_macos(initial_ppid, state_dir);
+}
+
+#[cfg(target_os = "linux")]
+fn arm_parent_death_linux(initial_ppid: i32, state_dir: PathBuf) {
+    // Block SIGTERM in this (main) thread before spawning anything else;
+    // future threads inherit the blocked mask, so the dedicated waiter is
+    // the only consumer. sigwait requires the signal to be blocked.
+    let mut mask: libc::sigset_t = unsafe { std::mem::zeroed() };
+    let rc = unsafe {
+        libc::sigemptyset(&mut mask);
+        libc::sigaddset(&mut mask, libc::SIGTERM);
+        libc::pthread_sigmask(libc::SIG_BLOCK, &mask, std::ptr::null_mut())
+    };
+    if rc != 0 {
+        log::error!(
+            "parent_death_arm_failed mechanism=prctl step=pthread_sigmask err={}",
+            std::io::Error::last_os_error(),
+        );
+        std::process::exit(1);
+    }
+
+    let waiter_dir = state_dir.clone();
     std::thread::spawn(move || {
-        loop {
-            std::thread::sleep(std::time::Duration::from_millis(500));
-            // When fish dies, this process gets reparented to init/launchd, so
-            // getppid() returns a different value than at startup.
-            let current = unsafe { libc::getppid() };
-            if current != initial_ppid {
-                log::info!("parent_died initial_ppid={initial_ppid} current_ppid={current}");
-                std::process::exit(0);
-            }
+        let mut wait_mask: libc::sigset_t = unsafe { std::mem::zeroed() };
+        unsafe {
+            libc::sigemptyset(&mut wait_mask);
+            libc::sigaddset(&mut wait_mask, libc::SIGTERM);
         }
+        let mut sig: libc::c_int = 0;
+        unsafe { libc::sigwait(&wait_mask, &mut sig) };
+        log::info!("parent_died");
+        if std::fs::remove_dir_all(&waiter_dir).is_ok() {
+            log::info!("state_dir_cleaned dir={}", waiter_dir.display());
+        }
+        std::process::exit(0);
+    });
+
+    // Arm. Once set, the kernel sends SIGTERM to this process when the
+    // parent thread group exits.
+    let rc = unsafe { libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM, 0, 0, 0) };
+    if rc != 0 {
+        log::error!(
+            "parent_death_arm_failed mechanism=prctl step=PR_SET_PDEATHSIG err={}",
+            std::io::Error::last_os_error(),
+        );
+        std::process::exit(1);
+    }
+
+    // Race: parent may have died before we armed. PR_SET_PDEATHSIG only
+    // fires on subsequent death, so check getppid() — if it has flipped,
+    // we missed the window.
+    let current = unsafe { libc::getppid() };
+    if current != initial_ppid {
+        log::info!("parent_died_before_arm initial_ppid={initial_ppid} current_ppid={current}");
+        if std::fs::remove_dir_all(&state_dir).is_ok() {
+            log::info!("state_dir_cleaned dir={}", state_dir.display());
+        }
+        std::process::exit(0);
+    }
+
+    log::info!("parent_death_armed mechanism=prctl ppid={initial_ppid}");
+}
+
+#[cfg(target_os = "macos")]
+fn arm_parent_death_macos(initial_ppid: i32, state_dir: PathBuf) {
+    let kq = unsafe { libc::kqueue() };
+    if kq < 0 {
+        log::error!(
+            "parent_death_arm_failed mechanism=kqueue step=kqueue err={}",
+            std::io::Error::last_os_error(),
+        );
+        std::process::exit(1);
+    }
+
+    // Register: notify on parent process exit, fire once.
+    let change = libc::kevent {
+        ident: initial_ppid as usize,
+        filter: libc::EVFILT_PROC,
+        flags: libc::EV_ADD | libc::EV_ONESHOT,
+        fflags: libc::NOTE_EXIT,
+        data: 0,
+        udata: std::ptr::null_mut(),
+    };
+    let n = unsafe { libc::kevent(kq, &change, 1, std::ptr::null_mut(), 0, std::ptr::null()) };
+    if n < 0 {
+        // Most likely ESRCH: parent already gone. Treat as parent-died.
+        log::info!(
+            "parent_died_before_arm err={}",
+            std::io::Error::last_os_error(),
+        );
+        if std::fs::remove_dir_all(&state_dir).is_ok() {
+            log::info!("state_dir_cleaned dir={}", state_dir.display());
+        }
+        std::process::exit(0);
+    }
+
+    // Race: parent may have died between getppid() above and kevent
+    // registration. kill(0) returns ESRCH if so.
+    if unsafe { libc::kill(initial_ppid, 0) } != 0 {
+        log::info!(
+            "parent_died_before_arm err={}",
+            std::io::Error::last_os_error(),
+        );
+        if std::fs::remove_dir_all(&state_dir).is_ok() {
+            log::info!("state_dir_cleaned dir={}", state_dir.display());
+        }
+        std::process::exit(0);
+    }
+
+    log::info!("parent_death_armed mechanism=kqueue ppid={initial_ppid}");
+
+    std::thread::spawn(move || {
+        let mut out: libc::kevent = unsafe { std::mem::zeroed() };
+        let n = unsafe { libc::kevent(kq, std::ptr::null(), 0, &mut out, 1, std::ptr::null()) };
+        if n < 0 {
+            log::error!("kevent_wait_failed err={}", std::io::Error::last_os_error(),);
+            // Fall through to exit anyway — staying alive after losing
+            // our death-detection channel is worse than exiting.
+        }
+        log::info!("parent_died");
+        if std::fs::remove_dir_all(&state_dir).is_ok() {
+            log::info!("state_dir_cleaned dir={}", state_dir.display());
+        }
+        std::process::exit(0);
     });
 }
 

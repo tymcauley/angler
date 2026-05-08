@@ -14,5 +14,9 @@ function _angler_spawn_daemon
     end
     command angler-daemon $args &
     set -g _angler_daemon_pid $last_pid
+    # Write the pidfile synchronously here (rather than from the daemon)
+    # so adoption across `exec fish` can't race the daemon's startup. The
+    # pidfile path is set up by _angler_init alongside _angler_dir.
+    set -q _angler_pid_file; and echo $_angler_daemon_pid >$_angler_pid_file
     disown $_angler_daemon_pid 2>/dev/null
 end

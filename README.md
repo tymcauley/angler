@@ -191,7 +191,7 @@ exec fish
 (`exec fish` because the daemon reads `_angler_log_file` once at spawn time.)
 
 Each line is `<rfc3339-timestamp> [<daemon-pid>] <event> key=value …`.
-Events include `start`, `request`, `watch` / `unwatch`, `watcher_fire`, `dirty_walk` (with `dur_ms` walk timing), `dirty_deferred` (deadline path), `walk_resolved` / `walk_dropped` / `walk_coalesced` / `walk_pending_kicked` (the coalescing pipeline), `status` / `status_skip` (idempotent write vs. unchanged-bytes skip), and `parent_died` (watchdog exit).
+Events include `start`, `parent_death_armed` (which kernel mechanism — `prctl` on Linux, `kqueue` on macOS — is watching for fish exit), `request`, `watch` / `unwatch`, `watcher_fire`, `dirty_walk` (with `dur_ms` walk timing), `dirty_deferred` (deadline path), `walk_resolved` / `walk_dropped` / `walk_coalesced` / `walk_pending_kicked` (the coalescing pipeline), `status` / `status_skip` (idempotent write vs. unchanged-bytes skip), `parent_died` (fish exited; daemon shutting down), and `state_dir_cleaned` (per-PID state dir removed on the way out).
 
 ```
 2026-05-04T18:26:40.659Z [4592] request pwd=/Users/tynan/code/angler
@@ -216,7 +216,8 @@ A per-shell daemon spawned on the first prompt render reads PWD changes from a F
 The daemon also watches `.git/` (and `.git/refs/` recursively) via `notify-debouncer-full`, so external git operations trigger the same render path.
 The dirty check is bounded by a deadline; on huge repos it returns "unknown" synchronously and the prompt updates again once the background scan finishes.
 A persistent worker thread serializes all gix walks: bursts (e.g., `git checkout` rewriting many files) collapse to one walk plus at most one follow-up rather than spawning concurrent walks.
-Daemon cleanup is automatic via a `getppid()` watchdog — no orphans on shell exit.
+The daemon's state lives at a deterministic per-PID path (under `$XDG_RUNTIME_DIR` on Linux, `$TMPDIR` on macOS), so an `exec fish` cleanly adopts the existing daemon — same kernel task, same PID, same state — instead of orphaning it and respawning.
+Daemon cleanup is automatic via kernel-level parent-death detection (`PR_SET_PDEATHSIG` on Linux, `kqueue` + `EVFILT_PROC` on macOS) — no polling, no orphans on shell exit, even when fish dies via `kill -9`.
 If the daemon dies (panic, OOM, manual kill), fish respawns it before the next request rather than hanging on the FIFO write or rendering an empty git block forever.
 
 Both sides of the wire are NUL-delimited (matching `find -print0` framing — robust against paths with embedded newlines or non-UTF-8 bytes) and prefixed with a wire-version sentinel `AN1`.
