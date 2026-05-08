@@ -209,18 +209,6 @@ make uninstall                # removes the symlinks
 cargo uninstall angler   # removes the daemon binary
 ```
 
-## Installing via fisher
-
-The repo layout is fisher-compatible by accident — fisher will pick up the `conf.d/` and `functions/` files.
-It just doesn't know about Rust binaries, so you still need cargo for the daemon:
-
-```sh
-fisher install /path/to/angler
-cargo install --path /path/to/angler
-```
-
-The Makefile install is the same thing in one command, plus dev-friendly symlinks instead of fisher's copies.
-
 ## How it works
 
 A per-shell daemon spawned on the first prompt render reads PWD changes from a FIFO, computes git status via gix, writes a NUL-delimited status file, and sends SIGUSR1 to fish — whose `--on-signal` handler calls `commandline -f repaint`.
@@ -247,3 +235,22 @@ make test       # all tests (Rust integration + fish render)
 
 The Rust tests spawn the daemon as a subprocess and drive it via the FIFO.
 The fish tests write hand-crafted status files and assert on the rendered substring.
+
+### Releasing
+
+Three places in the tree carry the version literal — `Cargo.toml`, `functions/_angler_install.fish` (the `expected` value the plugin checks), and `README.md` (the `--tag vX.Y.Z` install command).
+`scripts/release.sh` bumps all of them in lockstep, regenerates `Cargo.lock`, and runs the full check.
+It refuses to run on a dirty tree and stops short of any irreversible step so the diff can be reviewed first.
+
+```sh
+scripts/release.sh 0.2.0    # bump literals + run make check
+git diff                    # review
+git commit -am "Release v0.2.0"
+git tag -a v0.2.0 -m "v0.2.0"
+git push && git push origin v0.2.0
+```
+
+The release workflow runs on tag push and produces tarballs at `https://github.com/tymcauley/angler/releases/tag/v0.2.0`.
+
+The wire-version sentinel (`AN1` in `src/main.rs` and the fish files) is independent — bump it only when the protocol actually changes.
+A normal release leaves it alone.
