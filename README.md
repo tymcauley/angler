@@ -70,8 +70,8 @@ Then `exec fish`.
 ### From source (for hacking on angler)
 
 ```sh
-git clone https://github.com/tymcauley/angler ~/code/angler
-cd ~/code/angler
+git clone https://github.com/tymcauley/angler
+cd angler
 make install
 ```
 
