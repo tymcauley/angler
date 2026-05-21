@@ -9,7 +9,7 @@
 # gracefully (no git block instead of misparsed status), so the worst
 # outcome of ignoring this hint is a degraded prompt — never a crash.
 function _angler_install --on-event angler_install --on-event angler_update
-    set -l expected 0.1.0
+    set -l expected 0.2.0
 
     set -l install_help \
         "  cargo install --locked --git https://github.com/tymcauley/angler --tag v$expected" \
