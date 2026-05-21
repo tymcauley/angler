@@ -61,6 +61,11 @@ set -q _angler_color_vi_insert;  or set -g _angler_color_vi_insert  green --reve
 set -q _angler_color_vi_visual;  or set -g _angler_color_vi_visual  magenta --reverse --bold
 set -q _angler_color_vi_replace; or set -g _angler_color_vi_replace yellow --reverse --bold
 
+# Color modifier applied to walk-derived markers (dirty + submodule) while a
+# walk is in flight and the values on screen are cached or placeholder. Stored
+# as a list so it expands into the existing set_color call for each marker.
+set -q _angler_color_loading_modifier; or set -g _angler_color_loading_modifier --dim
+
 # Toggles (1 = show, anything else = hide).
 set -q _angler_show_ahead_behind;       or set -g _angler_show_ahead_behind       1
 set -q _angler_show_stash;              or set -g _angler_show_stash              1
@@ -98,10 +103,10 @@ status is-interactive; or exit 0
 # backgrounded so the rare respawn race (fish writes before the new daemon
 # has opened the FIFO) can't stall fish either.
 #
-# Wire framing: `AN1\0<path>\0` — a wire-version sentinel followed by the
+# Wire framing: `AN2\0<path>\0` — a wire-version sentinel followed by the
 # request path, both NUL-terminated. NUL framing keeps embedded newlines
 # and non-UTF-8 bytes intact (matches `find -print0`). The daemon rejects
-# any first token that isn't `AN1`, so old fish + new daemon (or vice
+# any first token that isn't `AN2`, so old fish + new daemon (or vice
 # versa) degrades to "no git block" instead of silently misparsing.
 function _angler_request_status --on-variable PWD
     _angler_init
@@ -111,7 +116,7 @@ function _angler_request_status --on-variable PWD
     # leaves it empty for backgrounded builtin jobs, and bare `disown`
     # would then fall back to fish's "last constructed job", which is
     # the user's, not ours.
-    command printf 'AN1\0%s\0' $PWD >$_angler_request_fifo &
+    command printf 'AN2\0%s\0' $PWD >$_angler_request_fifo &
     disown $last_pid 2>/dev/null
 end
 

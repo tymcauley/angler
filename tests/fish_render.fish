@@ -76,15 +76,16 @@ function assert_not_contains
     end
 end
 
-function write_status -d "Write a NUL-delimited status file: AN1 sentinel + path branch ahead behind dirty operation upstream stash submodules"
-    # Pad to 9 payload fields with "0" so existing 8-arg callers still work
-    # — the 9th field (submodules) defaults to no-submodules-dirty. The
-    # `AN1` wire-version sentinel is prepended automatically.
+function write_status -d "Write a NUL-delimited status file: AN2 sentinel + path branch ahead behind dirty operation upstream stash submodules loading"
+    # Pad to 10 payload fields with "0" so existing callers still work — the
+    # 9th field (submodules) defaults to no-submodules-dirty and the 10th
+    # (loading) defaults to not-loading. The `AN2` wire-version sentinel is
+    # prepended automatically.
     set -l fields $argv
-    while test (count $fields) -lt 9
+    while test (count $fields) -lt 10
         set fields $fields 0
     end
-    printf 'AN1\0%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s\0' $fields[1..9] >$_angler_status_file
+    printf 'AN2\0%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s\0' $fields[1..10] >$_angler_status_file
 end
 
 # ----- tests -----
@@ -133,6 +134,46 @@ write_status /tmp main 0 0 '?' '' '' 0
 set -l out (fish_prompt | string collect)
 assert_contains "$out" "main" "renders branch when dirty unknown"
 assert_contains "$out" "…" "renders ellipsis when dirty=?"
+
+# Loading bit: the configured modifier is appended to the color args for
+# walk-derived markers (dirty + submodule). We capture the SGR sequences
+# fish actually emits for the plain vs loading variants and grep for them
+# in the rendered output — avoids hardcoding terminfo bytes.
+set -l modified_plain (set_color $_angler_color_modified)
+set -l modified_loading (set_color $_angler_color_modified $_angler_color_loading_modifier)
+set -l submodule_plain (set_color $_angler_color_submodule)
+set -l submodule_loading (set_color $_angler_color_submodule $_angler_color_loading_modifier)
+set -l unknown_plain (set_color $_angler_color_unknown)
+set -l unknown_loading (set_color $_angler_color_unknown $_angler_color_loading_modifier)
+
+write_status /tmp main 0 0 '*' '' '' 0 0 1
+set -l out (fish_prompt | string collect)
+assert_contains "$out" "$modified_loading" "loading=1: modified marker uses loading color"
+assert_not_contains "$out" "$modified_plain" "loading=1: modified marker not plain"
+
+write_status /tmp main 0 0 '*' '' '' 0 0 0
+set -l out (fish_prompt | string collect)
+assert_contains "$out" "$modified_plain" "loading=0: modified marker plain"
+assert_not_contains "$out" "$modified_loading" "loading=0: modified marker not dimmed"
+
+write_status /tmp main 0 0 0 '' '' 0 2 1
+set -l out (fish_prompt | string collect)
+assert_contains "$out" "$submodule_loading" "loading=1: submodule marker uses loading color"
+
+# Negative case from the other direction: under loading=0 the loading SGR
+# must be entirely absent. (The plain submodule SGR equals the branch SGR
+# since they share yellow --bold, so a substring check against
+# $submodule_plain alone would false-positive on the branch.)
+write_status /tmp main 0 0 0 '' '' 0 2 0
+set -l out (fish_prompt | string collect)
+assert_not_contains "$out" "$submodule_loading" "loading=0: submodule marker not dimmed"
+
+# The unknown '…' marker carries the loading meaning on its own; the modifier
+# is not applied even when loading=1.
+write_status /tmp main 0 0 '?' '' '' 0 0 1
+set -l out (fish_prompt | string collect)
+assert_contains "$out" "$unknown_plain" "loading=1: unknown marker stays at plain color"
+assert_not_contains "$out" "$unknown_loading" "loading=1: unknown marker not dimmed"
 
 write_status /tmp main 3 0 0 '' '' 0
 set -l out (fish_prompt | string collect)

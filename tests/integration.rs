@@ -86,9 +86,9 @@ impl Harness {
                 Err(e) => panic!("could not open request FIFO for write: {e}"),
             }
         };
-        // Wire framing: `AN1\0<path>\0`. NUL-terminated keeps non-UTF-8 path
+        // Wire framing: `AN2\0<path>\0`. NUL-terminated keeps non-UTF-8 path
         // bytes intact and matches the daemon's reader.
-        writer.write_all(b"AN1\0").expect("write version");
+        writer.write_all(b"AN2\0").expect("write version");
         writer
             .write_all(path.as_os_str().as_bytes())
             .expect("write request");
@@ -154,20 +154,21 @@ struct Fields {
     upstream: String,
     stash: String,
     submodules: String,
+    loading: String,
 }
 
 fn read_status(p: &Path) -> std::io::Result<Fields> {
     let mut buf = Vec::new();
     File::open(p)?.read_to_end(&mut buf)?;
     let parts: Vec<&[u8]> = buf.split(|&b| b == 0).collect();
-    // Wire framing: `AN1\0` sentinel + 9 payload fields. Reject anything
+    // Wire framing: `AN2\0` sentinel + 10 payload fields. Reject anything
     // else — the daemon never writes a different shape, so a mismatch
     // means a partial write or a version skew, not a soft fallback.
-    if parts.first().copied() != Some(b"AN1".as_slice()) {
-        return Err(std::io::Error::other("missing AN1 wire-version sentinel"));
+    if parts.first().copied() != Some(b"AN2".as_slice()) {
+        return Err(std::io::Error::other("missing AN2 wire-version sentinel"));
     }
-    if parts.len() < 10 {
-        return Err(std::io::Error::other("fewer than 9 payload fields"));
+    if parts.len() < 11 {
+        return Err(std::io::Error::other("fewer than 10 payload fields"));
     }
     // Path can contain non-UTF-8 bytes — keep them. Other fields are ASCII
     // by daemon contract, so lossy UTF-8 is fine.
@@ -182,6 +183,7 @@ fn read_status(p: &Path) -> std::io::Result<Fields> {
         upstream: s(parts[7]),
         stash: s(parts[8]),
         submodules: s(parts[9]),
+        loading: s(parts[10]),
     })
 }
 
@@ -892,6 +894,106 @@ fn followup_request_does_not_downgrade_recent_real_dirty() {
          which produces the prompt-flicker loop; offending line:\n  {}\n\nfull write history:\n{}",
         downgrade.unwrap(),
         writes.join("\n"),
+    );
+}
+
+#[test]
+fn cold_cache_deadline_writes_loading_with_unknown_dirty() {
+    // First request into a freshly-discovered repo, with a 0ms deadline so
+    // the worker can't possibly finish in time. The daemon has no cached
+    // walk to replay, so it must write dirty=? with loading=1 — the
+    // placeholder + "in transition" signal fish uses to dim the markers.
+    // Then the walk lands and the daemon writes the real result with
+    // loading=0.
+    let log_dir = tempfile::tempdir().unwrap();
+    let log_path = log_dir.path().join("daemon.log");
+    let h = Harness::with_args(&[
+        "--dirty-deadline-ms",
+        "0",
+        "--log-file",
+        log_path.to_str().unwrap(),
+    ]);
+    let repo = make_clean_repo();
+    h.request(repo.path());
+    h.wait_until(Duration::from_secs(2), |f| {
+        f.dirty == "0" && f.loading == "0"
+    })
+    .expect("walk should land with dirty=0 loading=0");
+
+    let contents = std::fs::read_to_string(&log_path).unwrap_or_default();
+    let writes: Vec<&str> = contents
+        .lines()
+        .filter(|l| l.contains("] status branch="))
+        .collect();
+    assert!(
+        writes[0].contains("dirty=?") && writes[0].contains("loading=1"),
+        "first write must mark the unknown dirty as loading; got:\n  {}",
+        writes[0],
+    );
+    assert!(
+        writes[1].contains("dirty=0") && writes[1].contains("loading=0"),
+        "second write must carry the fresh real result with loading=0; got:\n  {}",
+        writes[1],
+    );
+}
+
+#[test]
+fn per_render_kick_after_fresh_walk_writes_nothing() {
+    // The no-flicker invariant: once a fresh walk has landed and data_fresh
+    // is true for the current pwd, follow-up requests (the per-render kick
+    // that fires on every fish_prompt repaint) must not produce additional
+    // status writes. Otherwise the loading bit would toggle on every kick
+    // and re-introduce a repaint loop.
+    let log_dir = tempfile::tempdir().unwrap();
+    let log_path = log_dir.path().join("daemon.log");
+    let h = Harness::with_args(&[
+        "--dirty-deadline-ms",
+        "0",
+        "--log-file",
+        log_path.to_str().unwrap(),
+    ]);
+    let repo = make_clean_repo();
+
+    // Settle: the initial request produces two writes (the loading=1 cold-
+    // cache write, then the loading=0 fresh-walk write). After this point
+    // data_fresh is true.
+    h.request(repo.path());
+    h.wait_until(Duration::from_secs(2), |f| {
+        f.dirty == "0" && f.loading == "0"
+    })
+    .expect("initial walk should settle to loading=0 dirty=0");
+
+    // Three follow-up requests. Each one fires a walk; the deadline-expired
+    // path returns SuppressedFresh (no write); the WalkComplete write
+    // matches the on-disk bytes (idempotency skip).
+    const FOLLOWUPS: usize = 3;
+    for _ in 0..FOLLOWUPS {
+        h.request(repo.path());
+    }
+
+    // Wait until each follow-up has been absorbed by the daemon. Under the
+    // 0ms deadline, the first follow-up suppresses (worker was idle), and
+    // subsequent ones arrive while that suppressed walk is still in flight
+    // and get coalesced. Either path is a write-free absorption.
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let contents = loop {
+        let c = std::fs::read_to_string(&log_path).unwrap_or_default();
+        let absorbed = c.matches("dirty_deferred reason=suppressed").count()
+            + c.matches("walk_coalesced").count();
+        if absorbed >= FOLLOWUPS {
+            break c;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "follow-ups didn't settle; absorbed={absorbed} log:\n{c}",
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    };
+
+    let writes = contents.matches("] status branch=").count();
+    assert_eq!(
+        writes, 2,
+        "expected exactly 2 status writes (the initial pair), got {writes}; log:\n{contents}",
     );
 }
 

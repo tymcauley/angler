@@ -81,15 +81,15 @@ function _angler_render_left --argument-names last_status cmd_duration
 
     if set -q _angler_status_file; and test -r $_angler_status_file
         set -l fields (cat $_angler_status_file | string split0)
-        # Wire-version sentinel: status file must start with `AN1`. Anything
-        # else (old daemon writing v0, malformed bytes, partial install) is
+        # Wire-version sentinel: status file must start with `AN2`. Anything
+        # else (old daemon writing v1, malformed bytes, partial install) is
         # treated as no git info — same fall-through as a count-guard miss.
-        if test (count $fields) -ge 1; and test "$fields[1]" = AN1
+        if test (count $fields) -ge 1; and test "$fields[1]" = AN2
             set -e fields[1]
         else
             set fields
         end
-        if test (count $fields) -ge 9
+        if test (count $fields) -ge 10
             set -l reported_path $fields[1]
             set -l branch $fields[2]
             set -l ahead $fields[3]
@@ -99,6 +99,17 @@ function _angler_render_left --argument-names last_status cmd_duration
             set -l upstream $fields[7]
             set -l stash $fields[8]
             set -l submodules $fields[9]
+            set -l loading $fields[10]
+
+            # When loading=1, append the configured modifier to the color
+            # args for walk-derived markers (dirty + submodule). Empty list
+            # otherwise — the leftover $loading_mod expands to nothing and
+            # leaves set_color calls unchanged. The unknown '…' marker
+            # already conveys "in transition" on its own and stays plain.
+            set -l loading_mod
+            if test "$loading" = 1
+                set loading_mod $_angler_color_loading_modifier
+            end
 
             if test "$reported_path" = $PWD; and test -n "$branch"
                 set buf $buf (set_color $_angler_color_branch) " $branch"
@@ -122,13 +133,13 @@ function _angler_render_left --argument-names last_status cmd_duration
                     for c in (string split '' -- $dirty)
                         switch $c
                             case '+'
-                                set buf $buf (set_color $_angler_color_staged) " $_angler_symbol_staged"
+                                set buf $buf (set_color $_angler_color_staged $loading_mod) " $_angler_symbol_staged"
                             case '\*'
-                                set buf $buf (set_color $_angler_color_modified) " $_angler_symbol_modified"
+                                set buf $buf (set_color $_angler_color_modified $loading_mod) " $_angler_symbol_modified"
                             case u
-                                set buf $buf (set_color $_angler_color_untracked) " $_angler_symbol_untracked"
+                                set buf $buf (set_color $_angler_color_untracked $loading_mod) " $_angler_symbol_untracked"
                             case '!'
-                                set buf $buf (set_color $_angler_color_conflict) " $_angler_symbol_conflict"
+                                set buf $buf (set_color $_angler_color_conflict $loading_mod) " $_angler_symbol_conflict"
                         end
                     end
                 end
@@ -136,7 +147,7 @@ function _angler_render_left --argument-names last_status cmd_duration
                     set buf $buf (set_color $_angler_color_stash) " $_angler_symbol_stash$stash"
                 end
                 if test "$submodules" != 0; and test -n "$submodules"; and test "$_angler_show_submodule" = 1
-                    set buf $buf (set_color $_angler_color_submodule) " $_angler_symbol_submodule$submodules"
+                    set buf $buf (set_color $_angler_color_submodule $loading_mod) " $_angler_symbol_submodule$submodules"
                 end
                 set buf $buf (set_color normal)
             end

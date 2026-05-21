@@ -47,6 +47,33 @@ struct WalkResult {
     submodules: u32,
 }
 
+/// What we know about prior walks, as seen by `maybe_kick_walk`.
+struct CacheState<'a> {
+    /// The most recent completed walk's result for `walk.0` (its pwd).
+    walk: Option<&'a (PathBuf, WalkResult)>,
+    /// True when `walk` is fresh for the current pwd and nothing external
+    /// has happened since — in which case the deadline-expired path can
+    /// suppress its write entirely instead of toggling the loading bit.
+    fresh: bool,
+}
+
+/// What `maybe_kick_walk` decided to surface this round.
+enum WalkOutcome {
+    /// Walk completed inside the deadline; caller writes fresh status.
+    Sync(WalkResult),
+    /// Deadline expired; replay this previously-completed walk's result.
+    /// Caller writes with the loading bit set.
+    Cached(WalkResult),
+    /// Deadline expired and no cached result for this pwd. Caller writes
+    /// placeholder walk-derived fields with the loading bit set.
+    Unknown,
+    /// Deadline expired but the status on disk is already a fresh walk
+    /// for this pwd; the just-kicked walk will deliver via WalkComplete.
+    /// Caller writes nothing — toggling the loading bit on every
+    /// per-render kick would defeat the purpose.
+    SuppressedFresh,
+}
+
 fn main() {
     let mut fish_pid: Option<i32> = None;
     let mut state_dir: Option<PathBuf> = None;
@@ -155,10 +182,19 @@ fn main() {
     let mut walk_inflight: Option<u64> = None;
     let mut walk_pending = false;
     // Most recent completed walk's result, keyed by the pwd it was for. The
-    // deadline-expired path replays this when the pwd matches, so dirty and
-    // submodules stay at their last known values while a new walk runs
-    // rather than degrading to Unknown.
+    // deadline-expired path replays this when the pwd matches, so the
+    // walk-derived fields stay at their last known values while a new walk
+    // runs rather than falling back to placeholders.
     let mut cached_walk: Option<(PathBuf, WalkResult)> = None;
+    // True while cached_walk's result is a fresh real walk for current_pwd
+    // and nothing external has happened since. Cleared on PWD change and on
+    // watcher_fire (an external mutation may have changed state); set on
+    // WalkComplete when a real result lands. While true, the deadline-
+    // expired path suppresses its write entirely. A per-render kick on
+    // already-fresh data shouldn't toggle the loading bit, since that would
+    // pull the prompt back into a repaint loop that alternates between
+    // fresh and stale renderings of the same underlying state.
+    let mut data_fresh: bool = false;
 
     while let Ok(event) = rx.recv() {
         match event {
@@ -166,6 +202,12 @@ fn main() {
             Event::Request(path) => {
                 let start = Instant::now();
                 log::info!("request pwd={}", path.display());
+                // A PWD change invalidates any fresh-data assumption for the
+                // new path. Same-pwd repeats (the per-render kick) keep
+                // data_fresh as-is so a fresh walk's settle isn't undone.
+                if current_pwd.as_deref() != Some(&path) {
+                    data_fresh = false;
+                }
                 current_pwd = Some(path.clone());
                 current_generation += 1;
                 let repo = gix::discover(&path).ok();
@@ -177,22 +219,41 @@ fn main() {
                 // never sees the event and the prompt goes stale.
                 swap_repo_watch(&mut debouncer, repo.as_ref(), &mut watched_git_dir);
 
-                let Some(dirty) = maybe_kick_walk(
+                let Some(outcome) = maybe_kick_walk(
                     &work_tx,
                     &mut walk_inflight,
                     &mut walk_pending,
                     current_generation,
                     &path,
                     dirty_deadline,
-                    cached_walk.as_ref(),
+                    CacheState {
+                        walk: cached_walk.as_ref(),
+                        fresh: data_fresh,
+                    },
                 ) else {
                     // Coalesced: a walk is already in flight. Don't write
                     // status; the WalkComplete handler will update once the
-                    // walk lands. Writing dirty=? here would briefly show
-                    // ? in the prompt and create a real→?→real flicker.
+                    // walk lands.
                     continue;
                 };
-                let status = repo.as_ref().map(|r| compute_status_for_repo(r, dirty));
+                let (walk_result, loading) = match outcome {
+                    WalkOutcome::Sync(r) => (r, false),
+                    WalkOutcome::Cached(r) => (r, true),
+                    WalkOutcome::Unknown => (
+                        WalkResult {
+                            dirty: DirtyState::Unknown,
+                            submodules: 0,
+                        },
+                        true,
+                    ),
+                    // Data on file is fresh and matches this pwd; the walk we
+                    // just kicked will deliver via WalkComplete. Writing now
+                    // would just toggle the loading bit back and forth.
+                    WalkOutcome::SuppressedFresh => continue,
+                };
+                let status = repo
+                    .as_ref()
+                    .map(|r| compute_status_for_repo(r, walk_result, loading));
                 write_and_signal(
                     &status_file,
                     &path,
@@ -208,21 +269,39 @@ fn main() {
                 };
                 let start = Instant::now();
                 log::info!("watcher_fire pwd={}", pwd.display());
+                // External change to .git/ may have moved dirty/branch/etc.;
+                // the cached walk for this pwd is no longer guaranteed fresh.
+                data_fresh = false;
 
-                let Some(dirty) = maybe_kick_walk(
+                let Some(outcome) = maybe_kick_walk(
                     &work_tx,
                     &mut walk_inflight,
                     &mut walk_pending,
                     current_generation,
                     &pwd,
                     dirty_deadline,
-                    cached_walk.as_ref(),
+                    CacheState {
+                        walk: cached_walk.as_ref(),
+                        fresh: data_fresh,
+                    },
                 ) else {
                     continue;
                 };
+                let (walk_result, loading) = match outcome {
+                    WalkOutcome::Sync(r) => (r, false),
+                    WalkOutcome::Cached(r) => (r, true),
+                    WalkOutcome::Unknown => (
+                        WalkResult {
+                            dirty: DirtyState::Unknown,
+                            submodules: 0,
+                        },
+                        true,
+                    ),
+                    WalkOutcome::SuppressedFresh => continue,
+                };
                 let status = gix::discover(&pwd)
                     .ok()
-                    .map(|r| compute_status_for_repo(&r, dirty));
+                    .map(|r| compute_status_for_repo(&r, walk_result, loading));
                 write_and_signal(
                     &status_file,
                     &pwd,
@@ -254,8 +333,9 @@ fn main() {
                         // would clobber a useful previous entry.
                         if !matches!(result.dirty, DirtyState::Unknown) {
                             cached_walk = Some((pwd.clone(), result.clone()));
+                            data_fresh = true;
                         }
-                        let status = compute_status_for_repo(&repo, result);
+                        let status = compute_status_for_repo(&repo, result, false);
                         write_and_signal(
                             &status_file,
                             &pwd,
@@ -293,16 +373,18 @@ fn main() {
     }
 }
 
-// Decide what to do for a "we want fresh dirty info" trigger:
-//   - If the worker is idle: kick a walk and synchronously wait up to
-//     `deadline` for the result. Return Some(dirty); caller writes status.
-//   - If the worker is busy: record that another walk is wanted (the
-//     in-flight walk's completion handler will kick one more walk) and
-//     return None; caller skips the status write so we don't flicker the
-//     prompt to "?" while there's already a recent real result on file.
-// On deadline expiry, if `cached_walk` is for this same pwd, replay it
-// instead of returning Unknown — keeps dirty/submodules at their last
-// known values rather than degrading to "?".
+// Decide what to do for a trigger that wants fresh walk-derived data:
+//   - Worker busy: return None (caller skips write; in-flight walk's
+//     WalkComplete will produce the answer).
+//   - Worker idle, walk completes inside deadline: return Sync(result).
+//   - Worker idle, deadline expires, cached result for this pwd, but
+//     `data_fresh` is true: return SuppressedFresh (caller skips write;
+//     the in-flight walk's WalkComplete will only write if the result
+//     actually changed).
+//   - Worker idle, deadline expires, cached result for this pwd, data
+//     not fresh: return Cached(result) (caller writes with loading=1).
+//   - Worker idle, deadline expires, no cached result for this pwd:
+//     return Unknown (caller writes dirty=? with loading=1).
 fn maybe_kick_walk(
     work_tx: &mpsc::Sender<WalkRequest>,
     walk_inflight: &mut Option<u64>,
@@ -310,8 +392,8 @@ fn maybe_kick_walk(
     generation: u64,
     pwd: &Path,
     deadline: Duration,
-    cached_walk: Option<&(PathBuf, WalkResult)>,
-) -> Option<WalkResult> {
+    cache: CacheState<'_>,
+) -> Option<WalkOutcome> {
     if walk_inflight.is_some() {
         log::info!("walk_coalesced gen={generation}");
         *walk_pending = true;
@@ -325,21 +407,23 @@ fn maybe_kick_walk(
         deadline_tx: Some(sync_tx),
     });
     match sync_rx.recv_timeout(deadline) {
-        Ok(r) => Some(r),
-        Err(_) => match cached_walk {
+        Ok(r) => Some(WalkOutcome::Sync(r)),
+        Err(_) => match cache.walk {
             Some((cached_pwd, cached_result)) if cached_pwd.as_path() == pwd => {
-                log::info!("dirty_deferred reason=cached pwd={}", pwd.display());
-                Some(cached_result.clone())
+                if cache.fresh {
+                    log::info!("dirty_deferred reason=suppressed pwd={}", pwd.display());
+                    Some(WalkOutcome::SuppressedFresh)
+                } else {
+                    log::info!("dirty_deferred reason=cached pwd={}", pwd.display());
+                    Some(WalkOutcome::Cached(cached_result.clone()))
+                }
             }
             _ => {
                 log::info!(
                     "dirty_deferred reason=unknown deadline_ms={}",
                     deadline.as_millis()
                 );
-                Some(WalkResult {
-                    dirty: DirtyState::Unknown,
-                    submodules: 0,
-                })
+                Some(WalkOutcome::Unknown)
             }
         },
     }
@@ -676,6 +760,10 @@ struct Status {
     operation: Option<&'static str>,
     stash: u32,
     submodules: u32,
+    // True when the walk-derived fields came from a cached or placeholder
+    // result while a walk is in flight. fish renders the corresponding
+    // markers with a dim modifier so the user sees they're in transition.
+    loading: bool,
 }
 
 enum UpstreamState {
@@ -739,7 +827,7 @@ impl DirtyState {
     }
 }
 
-fn compute_status_for_repo(repo: &gix::Repository, walk: WalkResult) -> Status {
+fn compute_status_for_repo(repo: &gix::Repository, walk: WalkResult, loading: bool) -> Status {
     let head_name = repo.head_name().ok().flatten();
     let branch = match &head_name {
         Some(name) => name.shorten().to_string(),
@@ -760,6 +848,7 @@ fn compute_status_for_repo(repo: &gix::Repository, walk: WalkResult) -> Status {
         operation: detect_operation(repo.git_dir()),
         stash: count_stashes(repo.git_dir()),
         submodules: walk.submodules,
+        loading,
     }
 }
 
@@ -895,16 +984,18 @@ fn classify_item(item: gix::status::Item, flags: &mut DirtyFlags, submodules: &m
 }
 
 // Wire format: a `FP<N>\0` version sentinel followed by N NUL-terminated
-// payload fields. v1 carries 9 payload fields:
+// payload fields. v2 carries 10 payload fields:
 //   request_path, branch, ahead, behind, dirty, operation, upstream, stash,
-//   submodules
-// For non-repos, the last 8 payload fields are empty. ahead/behind are "0"
+//   submodules, loading
+// For non-repos, the last 9 payload fields are empty. ahead/behind are "0"
 // when no upstream or upstream is gone; the upstream field carries the
-// qualitative signal. The version is parsed strictly: anything other than
-// `AN1` is rejected. Old fish reading new daemon (or vice versa) sees a
-// version mismatch and degrades cleanly to "no git block" rather than
-// silently mixing schemes.
-const WIRE_VERSION: &[u8] = b"AN1";
+// qualitative signal. `loading` is "1" while a walk is in flight and the
+// walk-derived fields on the wire are cached or placeholder values; "0"
+// once a fresh walk has landed. The version is parsed strictly: anything
+// other than `AN2` is rejected. Old fish reading new daemon (or vice
+// versa) sees a version mismatch and degrades cleanly to "no git block"
+// rather than silently mixing schemes.
+const WIRE_VERSION: &[u8] = b"AN2";
 
 fn build_status_bytes(request_path: &Path, status: Option<&Status>) -> Vec<u8> {
     let mut buf = Vec::with_capacity(256);
@@ -920,7 +1011,7 @@ fn build_status_bytes(request_path: &Path, status: Option<&Status>) -> Vec<u8> {
         };
         write!(
             buf,
-            "{}\0{}\0{}\0{}\0{}\0{}\0{}\0{}\0",
+            "{}\0{}\0{}\0{}\0{}\0{}\0{}\0{}\0{}\0",
             s.branch,
             ahead,
             behind,
@@ -929,10 +1020,11 @@ fn build_status_bytes(request_path: &Path, status: Option<&Status>) -> Vec<u8> {
             upstream_label,
             s.stash,
             s.submodules,
+            u8::from(s.loading),
         )
         .expect("writing to a Vec<u8> never fails");
     } else {
-        buf.extend_from_slice(b"\0\0\0\0\0\0\0\0");
+        buf.extend_from_slice(b"\0\0\0\0\0\0\0\0\0");
     }
     buf
 }
@@ -990,12 +1082,13 @@ fn log_status_event(status: Option<&Status>, elapsed: Duration) {
                 UpstreamState::None => (0, 0, ""),
             };
             log::info!(
-                "status branch={} dirty={} ahead={ahead} behind={behind} upstream={upstream} stash={} submodules={} op={} dur_ms={dur_ms}",
+                "status branch={} dirty={} ahead={ahead} behind={behind} upstream={upstream} stash={} submodules={} op={} loading={} dur_ms={dur_ms}",
                 s.branch,
                 s.dirty.encoded(),
                 s.stash,
                 s.submodules,
                 s.operation.unwrap_or(""),
+                u8::from(s.loading),
             );
         }
         None => log::info!("status no_repo dur_ms={dur_ms}"),

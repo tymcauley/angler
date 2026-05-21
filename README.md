@@ -151,6 +151,16 @@ set -g _angler_color_venv   blue
 set -g _angler_color_direnv green
 ```
 
+Loading modifier, applied to walk-derived markers while a walk is in flight:
+
+```fish
+set -g _angler_color_loading_modifier --dim
+```
+
+The default dims the dirty and submodule markers when their values come from a cached walk (the deadline expired before the new walk finished).
+The unknown `…` marker conveys the loading meaning on its own and isn't dimmed.
+Override with any `set_color` flags you prefer — they layer onto the existing color for each marker.
+
 Vi-mode block (line 1 leftmost, rendered by `fish_mode_prompt` when vi keybindings are active):
 
 ```fish
@@ -202,7 +212,7 @@ Events:
 - `watcher_fire pwd=…` — debounced `.git/` change event triggered a recompute.
 - `watch git_dir=…` / `unwatch git_dir=…` / `watch_failed git_dir=… err=…` — `.git/` watch lifecycle.
 - `dirty_walk dur_ms=… result=… submodules=…` — a walk completed in the worker thread.
-- `dirty_deferred reason=cached pwd=…` / `dirty_deferred reason=unknown deadline_ms=…` — deadline expired; either replayed the cached result for this pwd or fell back to "?".
+- `dirty_deferred reason=cached pwd=…` / `dirty_deferred reason=suppressed pwd=…` / `dirty_deferred reason=unknown deadline_ms=…` — deadline expired; either replayed the cached result with the loading bit set, suppressed the write because the on-disk status is already fresh, or fell back to "?" with the loading bit set.
 - `walk_resolved result=… submodules=…` — main loop received a WalkComplete and is about to write status.
 - `walk_dropped reason=stale …` / `walk_dropped reason=repo_missing pwd=…` — a walk result was discarded.
 - `walk_coalesced gen=…` — a request arrived while a walk was in flight; folded into the pending follow-up.
@@ -216,7 +226,7 @@ Events:
 2026-05-04T18:26:40.659Z [4592] request pwd=/Users/tynan/code/angler
 2026-05-04T18:26:40.661Z [4592] watch git_dir=/Users/tynan/code/angler/.git
 2026-05-04T18:26:40.662Z [4592] dirty_walk dur_ms=2 result=*u
-2026-05-04T18:26:40.663Z [4592] status branch=main dirty=*u ahead=0 behind=0 upstream= stash=0 op= dur_ms=3
+2026-05-04T18:26:40.663Z [4592] status branch=main dirty=*u ahead=0 behind=0 upstream= stash=0 submodules=0 op= loading=0 dur_ms=3
 ```
 
 You can use a fixed path across all shells (each daemon prefixes its lines with its PID) or per-shell logs via `set -U _angler_log_file /tmp/angler-$fish_pid.log`.
@@ -233,16 +243,28 @@ cargo uninstall angler   # removes the daemon binary
 A per-shell daemon spawned on the first prompt render reads PWD changes from a FIFO, computes git status via gix, writes a NUL-delimited status file, and sends SIGUSR1 to fish — whose `--on-signal` handler calls `commandline -f repaint`.
 `fish_prompt` also pokes the daemon on every prompt render, so worktree-only changes (an editor saving a file between cds) get caught the next time anything redraws the prompt; the daemon dedupes its writes against the last-written bytes, so this per-render kick doesn't form a SIGUSR1 → repaint → request → SIGUSR1 loop.
 The daemon also watches `.git/` (and `.git/refs/` recursively) via `notify-debouncer-full`, so external git operations trigger the same render path.
-The dirty check is bounded by a deadline; on the first request for a repo, expiring the deadline writes "unknown" synchronously and the prompt updates again once the background scan finishes. On follow-up requests for the same repo, the daemon replays the most recent walk's dirty/submodule result instead of degrading to "unknown" — so on a repo whose walk consistently straddles the deadline, the prompt holds its last known dirty state rather than flickering.
+The dirty check is bounded by a deadline.
+On the first request for a repo, expiring the deadline writes the unknown placeholder synchronously and the prompt updates again once the background scan finishes.
+On follow-up requests for the same repo, the daemon replays the most recent walk's result instead of degrading to the placeholder — so on a repo whose walk consistently straddles the deadline, the prompt holds its last known state rather than flickering.
+When the on-disk values were replayed (or are the unknown placeholder), the response carries a loading flag and fish dims the walk-derived markers so the user can see that the data is in transition; once the walk lands and the loading flag clears, the markers return to full intensity.
 A persistent worker thread serializes all gix walks: bursts (e.g., `git checkout` rewriting many files) collapse to one walk plus at most one follow-up rather than spawning concurrent walks.
 The daemon's state lives at a deterministic per-PID path (under `$XDG_RUNTIME_DIR` on Linux, `$TMPDIR` on macOS), so an `exec fish` cleanly adopts the existing daemon — same kernel task, same PID, same state — instead of orphaning it and respawning.
 Daemon cleanup is automatic via kernel-level parent-death detection (`PR_SET_PDEATHSIG` on Linux, `kqueue` + `EVFILT_PROC` on macOS) — no polling, no orphans on shell exit, even when fish dies via `kill -9`.
 If the daemon dies (panic, OOM, manual kill), fish respawns it before the next request rather than hanging on the FIFO write or rendering an empty git block forever.
 
-Both sides of the wire are NUL-delimited (matching `find -print0` framing — robust against paths with embedded newlines or non-UTF-8 bytes) and prefixed with a wire-version sentinel `AN1`.
-The request is `AN1\0<path>\0`; the response is `AN1\0<requested-path>\0<branch>\0<ahead>\0<behind>\0<dirty>\0<operation>\0<upstream>\0<stash>\0<submodules>\0`.
+Both sides of the wire are NUL-delimited (matching `find -print0` framing — robust against paths with embedded newlines or non-UTF-8 bytes) and prefixed with a wire-version sentinel `AN2`.
+The request is `AN2\0<path>\0`; the response is `AN2\0<requested-path>\0<branch>\0<ahead>\0<behind>\0<dirty>\0<operation>\0<upstream>\0<stash>\0<submodules>\0<loading>\0`.
 The version is checked strictly on both sides — old fish hitting a new daemon (or vice versa) degrades to "no git block" rather than silently misparsing.
-`branch` is empty when the path isn't a git repo; `dirty` is `0` for clean, `?` for unknown, or some combination of `+` (staged), `*` (modified), `u` (untracked), `!` (conflict); `operation` is a label like `rebasing`/`merging` or empty; `upstream` is `gone` or empty; `stash` is the stash count; `submodules` is the count of submodules with changes (subject to the user's `diff.ignoreSubmodules`).
+Field meanings:
+
+- `branch` is empty when the path isn't a git repo.
+- `dirty` is `0` for clean, `?` for unknown, or some combination of `+` (staged), `*` (modified), `u` (untracked), `!` (conflict).
+- `operation` is a label like `rebasing` / `merging`, or empty.
+- `upstream` is `gone` or empty.
+- `stash` is the stash count.
+- `submodules` is the count of submodules with changes (subject to the user's `diff.ignoreSubmodules`).
+- `loading` is `1` while a walk is in flight and the walk-derived fields are cached or placeholder values; `0` once a fresh walk has landed.
+
 `fish_prompt` ignores responses whose path doesn't match the current `$PWD`, so stale fires during rapid `cd` are harmless.
 
 ## Development
@@ -272,5 +294,5 @@ git push && git push origin v0.2.0
 
 The release workflow runs on tag push and produces tarballs at `https://github.com/tymcauley/angler/releases/tag/v0.2.0`.
 
-The wire-version sentinel (`AN1` in `src/main.rs` and the fish files) is independent — bump it only when the protocol actually changes.
+The wire-version sentinel (`AN2` in `src/main.rs` and the fish files) is independent — bump it only when the protocol actually changes.
 A normal release leaves it alone.
