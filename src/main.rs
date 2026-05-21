@@ -154,6 +154,11 @@ fn main() {
     // set, we kick exactly one more walk for the current state.
     let mut walk_inflight: Option<u64> = None;
     let mut walk_pending = false;
+    // Most recent completed walk's result, keyed by the pwd it was for. The
+    // deadline-expired path replays this when the pwd matches, so dirty and
+    // submodules stay at their last known values while a new walk runs
+    // rather than degrading to Unknown.
+    let mut cached_walk: Option<(PathBuf, WalkResult)> = None;
 
     while let Ok(event) = rx.recv() {
         match event {
@@ -177,8 +182,9 @@ fn main() {
                     &mut walk_inflight,
                     &mut walk_pending,
                     current_generation,
-                    path.clone(),
+                    &path,
                     dirty_deadline,
+                    cached_walk.as_ref(),
                 ) else {
                     // Coalesced: a walk is already in flight. Don't write
                     // status; the WalkComplete handler will update once the
@@ -208,8 +214,9 @@ fn main() {
                     &mut walk_inflight,
                     &mut walk_pending,
                     current_generation,
-                    pwd.clone(),
+                    &pwd,
                     dirty_deadline,
+                    cached_walk.as_ref(),
                 ) else {
                     continue;
                 };
@@ -242,6 +249,12 @@ fn main() {
                     );
                     if let Ok(repo) = gix::discover(&pwd) {
                         let start = Instant::now();
+                        // Cache before consuming `result`. Worker returns
+                        // Unknown only for non-repo paths; remembering that
+                        // would clobber a useful previous entry.
+                        if !matches!(result.dirty, DirtyState::Unknown) {
+                            cached_walk = Some((pwd.clone(), result.clone()));
+                        }
                         let status = compute_status_for_repo(&repo, result);
                         write_and_signal(
                             &status_file,
@@ -287,13 +300,17 @@ fn main() {
 //     in-flight walk's completion handler will kick one more walk) and
 //     return None; caller skips the status write so we don't flicker the
 //     prompt to "?" while there's already a recent real result on file.
+// On deadline expiry, if `cached_walk` is for this same pwd, replay it
+// instead of returning Unknown — keeps dirty/submodules at their last
+// known values rather than degrading to "?".
 fn maybe_kick_walk(
     work_tx: &mpsc::Sender<WalkRequest>,
     walk_inflight: &mut Option<u64>,
     walk_pending: &mut bool,
     generation: u64,
-    pwd: PathBuf,
+    pwd: &Path,
     deadline: Duration,
+    cached_walk: Option<&(PathBuf, WalkResult)>,
 ) -> Option<WalkResult> {
     if walk_inflight.is_some() {
         log::info!("walk_coalesced gen={generation}");
@@ -304,16 +321,28 @@ fn maybe_kick_walk(
     *walk_inflight = Some(generation);
     let _ = work_tx.send(WalkRequest {
         generation,
-        pwd,
+        pwd: pwd.to_path_buf(),
         deadline_tx: Some(sync_tx),
     });
-    Some(sync_rx.recv_timeout(deadline).unwrap_or_else(|_| {
-        log::info!("dirty_deferred deadline_ms={}", deadline.as_millis());
-        WalkResult {
-            dirty: DirtyState::Unknown,
-            submodules: 0,
-        }
-    }))
+    match sync_rx.recv_timeout(deadline) {
+        Ok(r) => Some(r),
+        Err(_) => match cached_walk {
+            Some((cached_pwd, cached_result)) if cached_pwd.as_path() == pwd => {
+                log::info!("dirty_deferred reason=cached pwd={}", pwd.display());
+                Some(cached_result.clone())
+            }
+            _ => {
+                log::info!(
+                    "dirty_deferred reason=unknown deadline_ms={}",
+                    deadline.as_millis()
+                );
+                Some(WalkResult {
+                    dirty: DirtyState::Unknown,
+                    submodules: 0,
+                })
+            }
+        },
+    }
 }
 
 // Swap which repo's `.git/` we watch. Idempotent if `git_dir` hasn't

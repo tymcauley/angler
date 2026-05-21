@@ -191,7 +191,26 @@ exec fish
 (`exec fish` because the daemon reads `_angler_log_file` once at spawn time.)
 
 Each line is `<rfc3339-timestamp> [<daemon-pid>] <event> key=value …`.
-Events include `start`, `parent_death_armed` (which kernel mechanism — `prctl` on Linux, `kqueue` on macOS — is watching for fish exit), `request`, `watch` / `unwatch`, `watcher_fire`, `dirty_walk` (with `dur_ms` walk timing), `dirty_deferred` (deadline path), `walk_resolved` / `walk_dropped` / `walk_coalesced` / `walk_pending_kicked` (the coalescing pipeline), `status` / `status_skip` (idempotent write vs. unchanged-bytes skip), `parent_died` (fish exited; daemon shutting down), and `state_dir_cleaned` (per-PID state dir removed on the way out).
+Events:
+
+- `start fish_pid=… state_dir=… dirty_deadline_ms=…` — daemon startup.
+- `parent_death_armed mechanism=…` — kernel-level fish-exit detection ready (`mechanism=prctl` on Linux, `mechanism=kqueue` on macOS).
+- `parent_died` / `parent_died_before_arm …` — fish exited and the daemon is shutting down (the `_before_arm` variant means the parent was already gone before we could arm).
+- `parent_death_arm_failed …` / `kevent_wait_failed …` — fatal kernel-side death-detection setup or wait failure; daemon exits.
+- `state_dir_cleaned dir=…` — per-PID state directory removed on the way out.
+- `request pwd=…` — fish asked for a fresh status.
+- `watcher_fire pwd=…` — debounced `.git/` change event triggered a recompute.
+- `watch git_dir=…` / `unwatch git_dir=…` / `watch_failed git_dir=… err=…` — `.git/` watch lifecycle.
+- `dirty_walk dur_ms=… result=… submodules=…` — a walk completed in the worker thread.
+- `dirty_deferred reason=cached pwd=…` / `dirty_deferred reason=unknown deadline_ms=…` — deadline expired; either replayed the cached result for this pwd or fell back to "?".
+- `walk_resolved result=… submodules=…` — main loop received a WalkComplete and is about to write status.
+- `walk_dropped reason=stale …` / `walk_dropped reason=repo_missing pwd=…` — a walk result was discarded.
+- `walk_coalesced gen=…` — a request arrived while a walk was in flight; folded into the pending follow-up.
+- `walk_pending_kicked gen=…` — coalesced requests had piled up; firing one more walk for the latest state.
+- `status branch=… dirty=… …` / `status no_repo dur_ms=…` — a status file was written.
+- `status_skip reason=unchanged dur_ms=…` — new bytes matched the previous write; skipped to avoid a redundant SIGUSR1.
+- `status_write_failed err=…` — atomic status-file rename failed.
+- `fifo_open_failed err=…` / `fifo_read_failed err=…` / `fifo_request_unknown_version got=…` — FIFO transport problems.
 
 ```
 2026-05-04T18:26:40.659Z [4592] request pwd=/Users/tynan/code/angler
@@ -214,7 +233,7 @@ cargo uninstall angler   # removes the daemon binary
 A per-shell daemon spawned on the first prompt render reads PWD changes from a FIFO, computes git status via gix, writes a NUL-delimited status file, and sends SIGUSR1 to fish — whose `--on-signal` handler calls `commandline -f repaint`.
 `fish_prompt` also pokes the daemon on every prompt render, so worktree-only changes (an editor saving a file between cds) get caught the next time anything redraws the prompt; the daemon dedupes its writes against the last-written bytes, so this per-render kick doesn't form a SIGUSR1 → repaint → request → SIGUSR1 loop.
 The daemon also watches `.git/` (and `.git/refs/` recursively) via `notify-debouncer-full`, so external git operations trigger the same render path.
-The dirty check is bounded by a deadline; on huge repos it returns "unknown" synchronously and the prompt updates again once the background scan finishes.
+The dirty check is bounded by a deadline; on the first request for a repo, expiring the deadline writes "unknown" synchronously and the prompt updates again once the background scan finishes. On follow-up requests for the same repo, the daemon replays the most recent walk's dirty/submodule result instead of degrading to "unknown" — so on a repo whose walk consistently straddles the deadline, the prompt holds its last known dirty state rather than flickering.
 A persistent worker thread serializes all gix walks: bursts (e.g., `git checkout` rewriting many files) collapse to one walk plus at most one follow-up rather than spawning concurrent walks.
 The daemon's state lives at a deterministic per-PID path (under `$XDG_RUNTIME_DIR` on Linux, `$TMPDIR` on macOS), so an `exec fish` cleanly adopts the existing daemon — same kernel task, same PID, same state — instead of orphaning it and respawning.
 Daemon cleanup is automatic via kernel-level parent-death detection (`PR_SET_PDEATHSIG` on Linux, `kqueue` + `EVFILT_PROC` on macOS) — no polling, no orphans on shell exit, even when fish dies via `kill -9`.

@@ -820,6 +820,82 @@ fn repeated_identical_requests_skip_after_first_write() {
 }
 
 #[test]
+fn followup_request_does_not_downgrade_recent_real_dirty() {
+    // Repro for the "?" flicker users see on big repos where the dirty walk
+    // straddles the deadline. After the first request lands a real dirty
+    // answer, a follow-up request — e.g. fish_prompt's per-render kick —
+    // must not overwrite that recent real answer with "?" just because its
+    // own walk didn't finish inside the deadline. Otherwise the prompt
+    // alternates between "?" and the real answer in a self-sustaining loop:
+    //   write "?" → SIGUSR1 → fish repaints → fish_prompt kicks the daemon
+    //   → walk lands → write real → SIGUSR1 → repaint → kick → write "?" → …
+    // The idempotency guard in write_and_signal doesn't break this loop on
+    // its own: the bytes alternate "?" / real / "?" / real, so every pair
+    // of writes differs from the last and SIGUSR1s keep firing.
+    //
+    // --dirty-deadline-ms 0 makes the deadline-expired path fire on every
+    // request deterministically, the same as a real 200ms-deadline +
+    // 215ms-walk repo in steady state.
+    let log_dir = tempfile::tempdir().unwrap();
+    let log_path = log_dir.path().join("daemon.log");
+    let h = Harness::with_args(&[
+        "--dirty-deadline-ms",
+        "0",
+        "--log-file",
+        log_path.to_str().unwrap(),
+    ]);
+    let repo = make_clean_repo();
+
+    // First request: deadline-expired path writes dirty=?, then the deferred
+    // walk lands and writes dirty=0. The status file ends at "0".
+    h.request(repo.path());
+    h.wait_until(Duration::from_secs(2), |f| f.dirty == "0")
+        .expect("initial dirty should resolve to '0'");
+
+    // Second request — the repaint kick. Must not downgrade dirty back to "?".
+    h.request(repo.path());
+
+    // Wait for the second request to be fully processed. Two cases land us
+    // here: the daemon walks again and the WalkComplete write is skipped
+    // because bytes match (status_skip), or it walks and writes a fresh
+    // dirty=0 (walk_resolved + a new status line). Either yields ≥2 of
+    // these events across the run.
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let contents = loop {
+        let c = std::fs::read_to_string(&log_path).unwrap_or_default();
+        if c.matches("walk_resolved").count() + c.matches("status_skip").count() >= 2 {
+            break c;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "second request didn't settle; log:\n{c}",
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    };
+
+    // Bug signature: any "status … dirty=?" line that appears AFTER the
+    // first "status … dirty=0" line. That's the downgrade-flicker.
+    let writes: Vec<&str> = contents
+        .lines()
+        .filter(|l| l.contains("] status branch="))
+        .collect();
+    let first_clean = writes
+        .iter()
+        .position(|l| l.contains("dirty=0"))
+        .unwrap_or_else(|| panic!("expected an initial dirty=0 write in:\n{contents}"));
+    let downgrade = writes[first_clean + 1..]
+        .iter()
+        .find(|l| l.contains("dirty=?"));
+    assert!(
+        downgrade.is_none(),
+        "follow-up request downgraded a recent real dirty result to '?', \
+         which produces the prompt-flicker loop; offending line:\n  {}\n\nfull write history:\n{}",
+        downgrade.unwrap(),
+        writes.join("\n"),
+    );
+}
+
+#[test]
 fn bursty_requests_coalesce_into_few_walks() {
     // Send a burst of 20 identical requests. With coalescing we expect
     // many fewer walks than 20 — only the first request kicks one, and
