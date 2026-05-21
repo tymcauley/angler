@@ -132,7 +132,7 @@ assert_contains "$out" "!" "all four: conflict"
 write_status /tmp main 0 0 '?' '' '' 0
 set -l out (fish_prompt | string collect)
 assert_contains "$out" "main" "renders branch when dirty unknown"
-assert_contains "$out" "?" "renders question mark when dirty=?"
+assert_contains "$out" "…" "renders ellipsis when dirty=?"
 
 write_status /tmp main 3 0 0 '' '' 0
 set -l out (fish_prompt | string collect)

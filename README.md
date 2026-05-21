@@ -21,7 +21,7 @@ Line 1 left:
 - `↑N` commits ahead of upstream, `↓N` behind
 - **red** `↯` if the upstream tracking branch is gone (typically a deleted remote branch you can prune)
 - Dirty markers: red `*` modified, green `+` staged, yellow `?` untracked, red bold `!` conflict
-- **yellow** `?` if the dirty check couldn't finish within the deadline (default 200ms — you'll see it on huge repos with a cold disk cache; resolves on its own once the background scan finishes)
+- **yellow** `…` if the dirty check couldn't finish within the deadline (default 200ms — you'll see it on huge repos with a cold disk cache; resolves on its own once the background scan finishes)
 - **blue** `≡N` for stash count (hidden if zero)
 - **yellow** `sN` for the count of submodules with changes (hidden if zero — granularity follows your `diff.ignoreSubmodules` config; an unset config defaults to counting both HEAD-diffs and worktree-dirty submodules)
 - **magenta** `(rebasing)` / `(merging)` / etc. when an operation is in progress
@@ -103,7 +103,7 @@ set -g _angler_symbol_modified  '*'   # red, unstaged tracked changes
 set -g _angler_symbol_staged    '+'   # green, changes added but not committed
 set -g _angler_symbol_untracked '?'   # yellow, untracked files
 set -g _angler_symbol_conflict  '!'   # red bold, merge/rebase conflict
-set -g _angler_symbol_unknown   '?'   # yellow, dirty deadline expired
+set -g _angler_symbol_unknown   '…'   # yellow, dirty deadline expired
 set -g _angler_symbol_ahead     '↑'   # commits ahead of upstream
 set -g _angler_symbol_behind    '↓'   # commits behind upstream
 set -g _angler_symbol_gone      '↯'   # red, upstream branch is gone
