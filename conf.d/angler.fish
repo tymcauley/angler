@@ -81,7 +81,7 @@ set -q _angler_show_direnv;             or set -g _angler_show_direnv           
 set -q _angler_cmd_duration_threshold_ms; or set -g _angler_cmd_duration_threshold_ms 1000
 
 # Daemon tuning.
-set -q _angler_dirty_deadline_ms; or set -g _angler_dirty_deadline_ms 200
+set -q _angler_dirty_deadline_ms; or set -g _angler_dirty_deadline_ms 50
 
 # Optional log file for the daemon (off by default). Set this in config.fish
 # to enable; the path may include $fish_pid for a per-shell log, or be a

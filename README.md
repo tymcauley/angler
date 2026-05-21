@@ -21,7 +21,7 @@ Line 1 left:
 - `↑N` commits ahead of upstream, `↓N` behind
 - **red** `↯` if the upstream tracking branch is gone (typically a deleted remote branch you can prune)
 - Dirty markers: red `*` modified, green `+` staged, yellow `?` untracked, red bold `!` conflict
-- **yellow** `…` if the dirty check couldn't finish within the deadline (default 200ms — you'll see it on huge repos with a cold disk cache; resolves on its own once the background scan finishes)
+- **yellow** `…` if the dirty check couldn't finish within the deadline (default 50ms — you'll see it on huge repos with a cold disk cache; resolves on its own once the background scan finishes)
 - **blue** `≡N` for stash count (hidden if zero)
 - **yellow** `sN` for the count of submodules with changes (hidden if zero — granularity follows your `diff.ignoreSubmodules` config; an unset config defaults to counting both HEAD-diffs and worktree-dirty submodules)
 - **magenta** `(rebasing)` / `(merging)` / etc. when an operation is in progress
@@ -180,7 +180,7 @@ Drop `--reverse` from the colors for plain colored letters; set the symbols to `
 Daemon tuning (passed as flags when the daemon spawns):
 
 ```fish
-set -g _angler_dirty_deadline_ms 200   # how long to wait synchronously before
+set -g _angler_dirty_deadline_ms 50    # how long to wait synchronously before
                                    # falling back to a deferred result
 set -g _angler_log_file ""             # path to the daemon log file; empty
                                    # disables logging entirely (default)

@@ -9,7 +9,7 @@ use std::time::{Duration, Instant, SystemTime};
 use notify::RecursiveMode;
 use notify_debouncer_full::{DebounceEventResult, Debouncer, RecommendedCache, new_debouncer};
 
-const DEFAULT_DIRTY_DEADLINE: Duration = Duration::from_millis(200);
+const DEFAULT_DIRTY_DEADLINE: Duration = Duration::from_millis(50);
 const DEBOUNCE: Duration = Duration::from_millis(150);
 
 enum Event {
