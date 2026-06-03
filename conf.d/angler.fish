@@ -78,6 +78,13 @@ set -q _angler_show_vi_mode;            or set -g _angler_show_vi_mode          
 set -q _angler_show_ssh;                or set -g _angler_show_ssh                1
 set -q _angler_show_venv;               or set -g _angler_show_venv               1
 set -q _angler_show_direnv;             or set -g _angler_show_direnv             1
+
+# We render the venv ourselves (right side, width-accounted). Suppress the
+# activate script's own `fish_prompt` wrapper — its injected `(name) ` prefix
+# isn't in our padding budget and causes line-1 truncation. Guarded so a user
+# can opt back into the native prefix with `set -g VIRTUAL_ENV_DISABLE_PROMPT ''`.
+set -q VIRTUAL_ENV_DISABLE_PROMPT; or set -gx VIRTUAL_ENV_DISABLE_PROMPT 1
+
 set -q _angler_cmd_duration_threshold_ms; or set -g _angler_cmd_duration_threshold_ms 1000
 
 # Daemon tuning.

@@ -30,7 +30,9 @@ Line 1 left:
 
 Line 1 right (only when there's room):
 
-- **blue** Python venv name when `$VIRTUAL_ENV` is set (basename of the venv path; if that's `.venv` or `venv`, walks up to use the parent directory name)
+- **blue** Python venv name when `$VIRTUAL_ENV` is set (basename of the venv path; if that's `.venv` or `venv`, walks up to use the parent directory name).
+  Angler renders this itself and sets `VIRTUAL_ENV_DISABLE_PROMPT` so the venv's activate script doesn't *also* prepend its own `(name) ` to line 1 (which would fall outside angler's padding budget and truncate the line).
+  To opt back into the native prefix, set it empty yourself: `set -g VIRTUAL_ENV_DISABLE_PROMPT ''`.
 - **green** `direnv` indicator when `$DIRENV_DIR` is set
 - **gray** time `HH:MM:SS`
 
