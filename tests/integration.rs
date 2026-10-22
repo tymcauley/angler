@@ -443,6 +443,45 @@ fn untracked_file_shows_untracked_flag() {
 }
 
 #[test]
+fn directory_of_only_ignored_files_is_not_untracked() {
+    let h = Harness::new();
+    let repo = make_clean_repo();
+    std::fs::write(repo.path().join(".git/info/exclude"), b"*.log\n").unwrap();
+    std::fs::create_dir_all(repo.path().join("logs/nested")).unwrap();
+    std::fs::write(repo.path().join("logs/a.log"), b"x\n").unwrap();
+    std::fs::write(repo.path().join("logs/nested/b.log"), b"x\n").unwrap();
+    h.request(repo.path());
+    let f = h.wait_for(repo.path());
+    assert_eq!(f.dirty, "0");
+}
+
+#[test]
+fn untracked_file_among_ignored_files_shows_untracked_flag() {
+    let h = Harness::new();
+    let repo = make_clean_repo();
+    std::fs::write(repo.path().join(".git/info/exclude"), b"*.log\n").unwrap();
+    std::fs::create_dir_all(repo.path().join("logs")).unwrap();
+    for i in 0..50 {
+        std::fs::write(repo.path().join(format!("logs/{i}.log")), b"x\n").unwrap();
+    }
+    std::fs::write(repo.path().join("logs/notes.txt"), b"x\n").unwrap();
+    h.request(repo.path());
+    let f = h.wait_for(repo.path());
+    assert_eq!(f.dirty, "u");
+}
+
+#[test]
+fn show_untracked_files_no_hides_untracked_flag() {
+    let h = Harness::new();
+    let repo = make_clean_repo();
+    git(repo.path(), &["config", "status.showUntrackedFiles", "no"]);
+    std::fs::write(repo.path().join("new.txt"), b"hello\n").unwrap();
+    h.request(repo.path());
+    let f = h.wait_for(repo.path());
+    assert_eq!(f.dirty, "0");
+}
+
+#[test]
 fn staged_change_shows_staged_flag() {
     let h = Harness::new();
     let repo = make_clean_repo();
