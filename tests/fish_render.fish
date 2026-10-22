@@ -17,6 +17,11 @@ source $repo_root/conf.d/angler.fish
 set -g _angler_show_time 0
 set -g _angler_show_cmd_duration 0
 
+# Clear an inherited `SSH_TTY` so the host prefix only renders in the SSH cases
+# that set it. The prefix shared the red-bold escape with the modified marker,
+# so a stray prefix breaks the plain-vs-loading color assertions.
+set -e SSH_TTY
+
 # Per-test scratch state
 set -g _angler_status_file (command mktemp)
 function _cleanup --on-event fish_exit
