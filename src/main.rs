@@ -7,6 +7,7 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant, SystemTime};
 
 use notify::RecursiveMode;
+use notify::event::{AccessKind, EventKind};
 use notify_debouncer_full::{DebounceEventResult, Debouncer, RecommendedCache, new_debouncer};
 
 const DEFAULT_DIRTY_DEADLINE: Duration = Duration::from_millis(50);
@@ -151,8 +152,18 @@ fn main() {
             // We don't care which path fired — main thread re-computes for the
             // current PWD. (See the path-match guard in fish_prompt for why
             // this is safe even if a non-current repo's events trigger us.)
+            //
+            // We ignore open events. inotify reports every open of a watched
+            // file, and our own walk opens `HEAD`, `config`, `packed-refs`,
+            // and `index`. Without this filter, each walk fires the watcher,
+            // which kicks the next walk, and the daemon never goes idle.
+            // Other shells' daemons on the same repo feed the loop the same
+            // way. `IN_CLOSE_WRITE` arrives as `Access(Close(Write))` and is
+            // a real mutation, so we keep the rest of `Access`.
             if let Ok(events) = result
-                && !events.is_empty()
+                && events
+                    .iter()
+                    .any(|e| !matches!(e.kind, EventKind::Access(AccessKind::Open(_))))
             {
                 watch_tx.send(Event::WatcherFired).ok();
             }
