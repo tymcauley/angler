@@ -243,7 +243,8 @@ cargo uninstall angler   # removes the daemon binary
 ## How it works
 
 A per-shell daemon spawned on the first prompt render reads PWD changes from a FIFO, computes git status via gix, writes a NUL-delimited status file, and sends SIGUSR1 to fish — whose `--on-signal` handler calls `commandline -f repaint`.
-`fish_prompt` also pokes the daemon on every prompt render, so worktree-only changes (an editor saving a file between cds) get caught the next time anything redraws the prompt; the daemon dedupes its writes against the last-written bytes, so this per-render kick doesn't form a SIGUSR1 → repaint → request → SIGUSR1 loop.
+fish also pokes the daemon on every new prompt (the `fish_prompt` event), so worktree-only changes (an editor saving a file between cds) get caught the next time you press Enter.
+Repaints don't poke the daemon, so the daemon's own SIGUSR1 doesn't start another walk.
 The daemon also watches `.git/` (and `.git/refs/` recursively) via `notify-debouncer-full`, so external git operations trigger the same render path.
 The dirty check is bounded by a deadline.
 On the first request for a repo, expiring the deadline writes the unknown placeholder synchronously and the prompt updates again once the background scan finishes.

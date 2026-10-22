@@ -71,7 +71,7 @@ enum WalkOutcome {
     /// Deadline expired but the status on disk is already a fresh walk
     /// for this pwd; the just-kicked walk will deliver via WalkComplete.
     /// Caller writes nothing — toggling the loading bit on every
-    /// per-render kick would defeat the purpose.
+    /// per-prompt kick would defeat the purpose.
     SuppressedFresh,
 }
 
@@ -183,8 +183,8 @@ fn main() {
     let mut current_generation: u64 = 0;
     // Bytes of the most recent status file write. Used to skip redundant
     // writes + SIGUSR1s when a fresh recompute lands on the same state.
-    // Without this, fish_prompt firing a request on every render would
-    // form a SIGUSR1 → repaint → request → SIGUSR1 loop.
+    // fish requests on every new prompt, so without this every Enter would
+    // cost a redundant repaint.
     let mut last_status_bytes: Option<Vec<u8>> = None;
     // Generation of the walk currently being processed by the worker, if
     // any. While Some, new Request/WatcherFired events do not kick a walk;
@@ -201,10 +201,10 @@ fn main() {
     // and nothing external has happened since. Cleared on PWD change and on
     // watcher_fire (an external mutation may have changed state); set on
     // WalkComplete when a real result lands. While true, the deadline-
-    // expired path suppresses its write entirely. A per-render kick on
-    // already-fresh data shouldn't toggle the loading bit, since that would
-    // pull the prompt back into a repaint loop that alternates between
-    // fresh and stale renderings of the same underlying state.
+    // expired path suppresses its write entirely. A per-prompt kick on
+    // already-fresh data shouldn't toggle the loading bit, since the markers
+    // would then blink dim on every Enter in a repo whose walk outlasts the
+    // deadline.
     let mut data_fresh: bool = false;
 
     while let Ok(event) = rx.recv() {
@@ -214,7 +214,7 @@ fn main() {
                 let start = Instant::now();
                 log::info!("request pwd={}", path.display());
                 // A PWD change invalidates any fresh-data assumption for the
-                // new path. Same-pwd repeats (the per-render kick) keep
+                // new path. Same-pwd repeats (the per-prompt kick) keep
                 // data_fresh as-is so a fresh walk's settle isn't undone.
                 if current_pwd.as_deref() != Some(&path) {
                     data_fresh = false;

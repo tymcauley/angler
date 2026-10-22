@@ -2,17 +2,6 @@ function fish_prompt
     set -l last_status $status
     set -l cmd_duration $CMD_DURATION
 
-    # Kick the daemon to recompute on every prompt render. The daemon
-    # responds asynchronously and SIGUSR1's a repaint when the result
-    # actually changes — see the idempotency guard in the daemon. This
-    # keeps the prompt correct after external worktree changes (editor
-    # saves, scripts in another window, etc.) that don't touch `.git/`.
-    # Guarded so this file is safe to source outside our conf.d (tests,
-    # partial installs); conf.d defines the function in interactive shells.
-    if functions -q _angler_request_status
-        _angler_request_status
-    end
-
     # fish renders fish_mode_prompt to the left of fish_prompt's first line;
     # its width has to come out of our padding budget, otherwise an indicator
     # like `[I] ` pushes line 1 past $COLUMNS and fish truncates from the
