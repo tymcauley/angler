@@ -62,7 +62,7 @@ This installs the fish files.
 On install or `fisher update`, angler checks for `angler-daemon` on `$PATH` and prints what to do if it's missing or out of date — usually one of:
 
 ```fish
-cargo install --locked --git https://github.com/tymcauley/angler --tag v0.2.0
+cargo install --locked --git https://github.com/tymcauley/angler --tag v0.2.1
 ```
 
 or grab a prebuilt tarball from [GitHub Releases](https://github.com/tymcauley/angler/releases) and put `angler-daemon` somewhere on `$PATH`.
