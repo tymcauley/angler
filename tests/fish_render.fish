@@ -10,20 +10,17 @@ set -ga fish_function_path $repo_root/functions
 # in scripted mode.
 source $repo_root/conf.d/angler.fish
 
-# fish_prompt fires _angler_request_status on every render to keep state
-# fresh. That function is defined inside conf.d's interactive-gated
-# block, so it doesn't exist in scripted mode. Stub it as a no-op so
-# fish_prompt doesn't spam "Unknown command" errors during tests.
-# (The respawn test below installs its own real spawn helpers.)
-function _angler_request_status
-end
-
 # Disable time and command-duration rendering in tests: their output is
 # timing-dependent and the digits would collide with substring assertions
 # against numeric counts (ahead/behind/stash). Vi mode is also off by default,
 # so the prompt-symbol cases match.
 set -g _angler_show_time 0
 set -g _angler_show_cmd_duration 0
+
+# Clear an inherited `SSH_TTY` so the host prefix only renders in the SSH cases
+# that set it. The prefix shared the red-bold escape with the modified marker,
+# so a stray prefix breaks the plain-vs-loading color assertions.
+set -e SSH_TTY
 
 # Per-test scratch state
 set -g _angler_status_file (command mktemp)
@@ -671,22 +668,6 @@ write_status /tmp main xyz qqq '' '' '' abc
 set -l out (fish_prompt | string collect)
 assert_contains "$out" "tmp" "no crash when numeric fields are garbage"
 assert_contains "$out" "main" "branch still renders alongside garbage counts"
-
-# Defensive: fish_prompt must tolerate _angler_request_status being undefined.
-# Conf.d defines it only in interactive shells; without the `functions -q`
-# guard in fish_prompt, scripted use or partial installs would print
-# "Unknown command" on every render.
-write_status /tmp main 0 0 0 '' '' 0
-functions -e _angler_request_status
-set -l err (begin; fish_prompt; end 2>&1 >/dev/null | string collect)
-if test -z "$err"
-    ok "fish_prompt is silent when _angler_request_status is undefined"
-else
-    fail "fish_prompt is silent when _angler_request_status is undefined"
-    echo "       stderr: $err"
-end
-function _angler_request_status
-end
 
 # ----- daemon respawn -----
 #

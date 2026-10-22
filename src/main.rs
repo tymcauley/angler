@@ -1,12 +1,16 @@
 use std::fs::File;
 use std::io::{BufRead, BufReader, Write};
+use std::ops::ControlFlow;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use std::sync::atomic::AtomicBool;
 use std::sync::mpsc;
 use std::time::{Duration, Instant, SystemTime};
 
+use gix::worktree::IndexPersistedOrInMemory;
 use notify::RecursiveMode;
+use notify::event::{AccessKind, EventKind};
 use notify_debouncer_full::{DebounceEventResult, Debouncer, RecommendedCache, new_debouncer};
 
 const DEFAULT_DIRTY_DEADLINE: Duration = Duration::from_millis(50);
@@ -70,7 +74,7 @@ enum WalkOutcome {
     /// Deadline expired but the status on disk is already a fresh walk
     /// for this pwd; the just-kicked walk will deliver via WalkComplete.
     /// Caller writes nothing — toggling the loading bit on every
-    /// per-render kick would defeat the purpose.
+    /// per-prompt kick would defeat the purpose.
     SuppressedFresh,
 }
 
@@ -151,8 +155,18 @@ fn main() {
             // We don't care which path fired — main thread re-computes for the
             // current PWD. (See the path-match guard in fish_prompt for why
             // this is safe even if a non-current repo's events trigger us.)
+            //
+            // We ignore open events. inotify reports every open of a watched
+            // file, and our own walk opens `HEAD`, `config`, `packed-refs`,
+            // and `index`. Without this filter, each walk fires the watcher,
+            // which kicks the next walk, and the daemon never goes idle.
+            // Other shells' daemons on the same repo feed the loop the same
+            // way. `IN_CLOSE_WRITE` arrives as `Access(Close(Write))` and is
+            // a real mutation, so we keep the rest of `Access`.
             if let Ok(events) = result
-                && !events.is_empty()
+                && events
+                    .iter()
+                    .any(|e| !matches!(e.kind, EventKind::Access(AccessKind::Open(_))))
             {
                 watch_tx.send(Event::WatcherFired).ok();
             }
@@ -172,8 +186,8 @@ fn main() {
     let mut current_generation: u64 = 0;
     // Bytes of the most recent status file write. Used to skip redundant
     // writes + SIGUSR1s when a fresh recompute lands on the same state.
-    // Without this, fish_prompt firing a request on every render would
-    // form a SIGUSR1 → repaint → request → SIGUSR1 loop.
+    // fish requests on every new prompt, so without this every Enter would
+    // cost a redundant repaint.
     let mut last_status_bytes: Option<Vec<u8>> = None;
     // Generation of the walk currently being processed by the worker, if
     // any. While Some, new Request/WatcherFired events do not kick a walk;
@@ -190,10 +204,10 @@ fn main() {
     // and nothing external has happened since. Cleared on PWD change and on
     // watcher_fire (an external mutation may have changed state); set on
     // WalkComplete when a real result lands. While true, the deadline-
-    // expired path suppresses its write entirely. A per-render kick on
-    // already-fresh data shouldn't toggle the loading bit, since that would
-    // pull the prompt back into a repaint loop that alternates between
-    // fresh and stale renderings of the same underlying state.
+    // expired path suppresses its write entirely. A per-prompt kick on
+    // already-fresh data shouldn't toggle the loading bit, since the markers
+    // would then blink dim on every Enter in a repo whose walk outlasts the
+    // deadline.
     let mut data_fresh: bool = false;
 
     while let Ok(event) = rx.recv() {
@@ -203,7 +217,7 @@ fn main() {
                 let start = Instant::now();
                 log::info!("request pwd={}", path.display());
                 // A PWD change invalidates any fresh-data assumption for the
-                // new path. Same-pwd repeats (the per-render kick) keep
+                // new path. Same-pwd repeats (the per-prompt kick) keep
                 // data_fresh as-is so a fresh walk's settle isn't undone.
                 if current_pwd.as_deref() != Some(&path) {
                     data_fresh = false;
@@ -929,19 +943,49 @@ fn compute_upstream(repo: &gix::Repository, head_name: &gix::refs::FullNameRef) 
 // Submodule status is honored at the level the user's `diff.ignoreSubmodules`
 // config admits; submodule changes don't set the dirty flags but increment
 // `submodules` so they can render with their own indicator.
+//
+// We run the untracked-file walk ourselves instead of letting status do it.
+// The prompt only needs to know whether any untracked file exists, so our
+// walk stops at the first one. Status's own walk collapses each untracked
+// directory into one entry, and to do that it must visit and match every
+// path inside against the excludes. In a repo with a large untracked
+// directory that walk dominates the whole status.
 fn compute_dirty_unbounded(repo: &gix::Repository) -> WalkResult {
     let unknown = || WalkResult {
         dirty: DirtyState::Unknown,
         submodules: 0,
     };
+    let Ok(index) = repo.index_or_empty() else {
+        return unknown();
+    };
     let Ok(platform) = repo.status(gix::progress::Discard) else {
         return unknown();
     };
+    // Taking the walk options disables status's walk. They are already
+    // configured from `status.showUntrackedFiles`, and are `None` when it
+    // is `no`.
+    let mut dirwalk_options = None;
+    let platform = platform
+        .index(IndexPersistedOrInMemory::Persisted(index.clone()))
+        .index_worktree_options_mut(|opts| dirwalk_options = opts.dirwalk_options.take());
+    // `into_iter` starts status's worker threads and buffers their items
+    // in an unbounded channel, so our walk below runs concurrently with
+    // them on this thread.
     let Ok(iter) = platform.into_iter(None) else {
         return unknown();
     };
+    let untracked = match dirwalk_options {
+        Some(options) => match any_untracked(repo, &index, options) {
+            Some(found) => found,
+            None => return unknown(),
+        },
+        None => false,
+    };
 
-    let mut flags = DirtyFlags::default();
+    let mut flags = DirtyFlags {
+        untracked,
+        ..DirtyFlags::default()
+    };
     let mut submodules: u32 = 0;
     for item in iter.flatten() {
         classify_item(item, &mut flags, &mut submodules);
@@ -953,6 +997,43 @@ fn compute_dirty_unbounded(repo: &gix::Repository) -> WalkResult {
         DirtyState::Clean
     };
     WalkResult { dirty, submodules }
+}
+
+// Walks the worktree until the first untracked path, or returns `None` if the
+// walk fails. Reporting files individually lets us stop at the first match
+// instead of waiting for a whole untracked directory to be collapsed.
+fn any_untracked(
+    repo: &gix::Repository,
+    index: &gix::index::State,
+    options: gix::dirwalk::Options,
+) -> Option<bool> {
+    use gix::dir::EntryRef;
+    use gix::dir::entry::Status;
+    use gix::dir::walk::{Delegate, EmissionMode};
+
+    struct FirstUntracked {
+        found: bool,
+    }
+    impl Delegate for FirstUntracked {
+        fn emit(&mut self, entry: EntryRef<'_>, _: Option<Status>) -> ControlFlow<()> {
+            if matches!(entry.status, Status::Untracked) {
+                self.found = true;
+                return ControlFlow::Break(());
+            }
+            ControlFlow::Continue(())
+        }
+    }
+
+    let mut delegate = FirstUntracked { found: false };
+    repo.dirwalk(
+        index,
+        None::<&str>,
+        &AtomicBool::new(false),
+        options.emit_untracked(EmissionMode::Matching),
+        &mut delegate,
+    )
+    .ok()?;
+    Some(delegate.found)
 }
 
 fn classify_item(item: gix::status::Item, flags: &mut DirtyFlags, submodules: &mut u32) {

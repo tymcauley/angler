@@ -100,7 +100,7 @@ set -q _angler_log_file; or set -g _angler_log_file ""
 status is-interactive; or exit 0
 
 # _angler_init is autoloaded from functions/. It's lazy: deferred to the
-# first request from fish_prompt's per-render kick, so config.fish has run
+# first request from the first prompt, so config.fish has run
 # by then and PATH manipulations there are visible (`command -q
 # angler-daemon` works regardless of where the binary lives).
 
@@ -115,7 +115,15 @@ status is-interactive; or exit 0
 # and non-UTF-8 bytes intact (matches `find -print0`). The daemon rejects
 # any first token that isn't `AN2`, so old fish + new daemon (or vice
 # versa) degrades to "no git block" instead of silently misparsing.
-function _angler_request_status --on-variable PWD
+#
+# We request on every new prompt so worktree-only changes (editor saves,
+# scripts in another window) that don't touch `.git/` get picked up. We use
+# the `fish_prompt` event rather than calling this from the `fish_prompt`
+# function because the event fires once per new prompt, while the function
+# also runs on every repaint. Each daemon status write SIGUSR1s us into a
+# repaint, and a request there would start another full walk on data that
+# is milliseconds old.
+function _angler_request_status --on-event fish_prompt
     _angler_init
     set -q _angler_init_ok; or return
     _angler_ensure_daemon
@@ -125,6 +133,16 @@ function _angler_request_status --on-variable PWD
     # the user's, not ours.
     command printf 'AN2\0%s\0' $PWD >$_angler_request_fifo &
     disown $last_pid 2>/dev/null
+end
+
+# Some directory changes only repaint and never reach a new prompt. For
+# example, `prevd` bound to Alt-Left. We request for those here. When a
+# command is running, `status current-command` names it, and the new prompt
+# that follows will request. Requesting here too would make the daemon
+# discard a walk already in flight for the same directory and start over.
+# From a keybinding, `status current-command` is `fish`.
+function _angler_request_status_on_cd --on-variable PWD
+    test (status current-command) = fish; and _angler_request_status
 end
 
 function _angler_repaint --on-signal SIGUSR1
